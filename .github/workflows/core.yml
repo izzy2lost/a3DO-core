@@ -1,0 +1,89 @@
+# Build and test the core.
+#
+# Two applications depend on this repository -- Retro-3DO (Android, Linux,
+# Windows) and Clio (iOS) -- and neither of them builds it in its own CI as
+# anything but a black box. Without this, a change here reaches both front ends
+# before anything has run a single test against it.
+#
+# There is no sync-upstream workflow in this repository, unlike every other core
+# in the estate: this core is ours and has no upstream to track.
+name: core
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # The public header is what Swift imports through a module map, so it has
+      # to be valid C on its own. A stray C++-ism here would not fail any test
+      # above -- everything else that includes it is C++ -- and would surface
+      # much later as an unreadable import error on somebody's Mac.
+      - name: The public header is plain C
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+             -Iinclude -x c -fsyntax-only include/retro3do.h
+          echo "retro3do.h is valid C11 on its own"
+
+      # The boundary, checked rather than trusted: nothing an application can
+      # include may reach into the machine.
+      - name: The public header depends on nothing under core/
+        run: |
+          if grep -E '^[[:space:]]*#[[:space:]]*include' include/retro3do.h \
+               | grep -q 'core/'; then
+            echo "::error::include/retro3do.h includes a machine header"
+            exit 1
+          fi
+          echo "the public header stands alone"
+
+  # The core has to cross-compile for the two platforms that actually ship it,
+  # and Android is the one a Linux runner can prove. iOS is proved by Clio's own
+  # pipeline, which needs a Mac.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27
+
+      - name: Configure for arm64-v8a
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          cmake -S . -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRETRO3DO_CORE_TESTS=OFF \
+            -DRETRO3DO_CORE_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build-android -j"$(nproc)"
+
+      - name: It really is an arm64 library
+        run: |
+          file build-android/libretro3do_core.a
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
+            --defined-only build-android/libretro3do_core.a \
+            | grep -q retro3do_create
+          echo "the C interface is exported from the Android build"
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}

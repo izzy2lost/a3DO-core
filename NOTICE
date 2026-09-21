@@ -1,0 +1,38 @@
+Retro3DO Core distribution notice
+Copyright (c) 2026 Crown Park Computing
+
+The project-owned Retro3DO Core source code is distributed under the MIT
+License in LICENSE. That licence permits use, modification, distribution,
+sublicensing and sale, subject to preserving its copyright and permission
+notice.
+
+This repository is the emulation core only: the ARM60, MADAM, CLIO, the DSP,
+SPORT, VDLP, XBUS, the PBUS pad chain and CD/CHD media handling, reached through
+the C interface in include/retro3do.h. It carries no user interface, no window,
+no audio device and no platform layer. Applications wrapping it carry their own
+notices for their own components; nothing in this file covers them.
+
+The core contains separately licensed components. Their copyright and licence
+terms remain in force and are collected in docs/THIRD_PARTY.md and the
+corresponding third_party/* licence files. They are libchdr (BSD-3-Clause) and
+its bundled miniz (MIT), LZMA SDK (public domain) and zstd (BSD selected).
+Portions informed by MAME carry the BSD-3-Clause notices recorded in
+docs/THIRD_PARTY.md.
+
+No commercial or third-party 3DO BIOS or game image is included. The core does
+contain the small project-owned demonstration boot ROM in core/demo_rom_data.h,
+which is a hardware test rather than a BIOS: it cannot boot a commercial disc.
+Whoever supplies a BIOS or a disc image is responsible for having the rights to
+it.
+
+Historical reference-source exposure is documented in docs/PROVENANCE.md. No
+FreeDO, 4DO, Opera or opera-libretro source is compiled or vendored here, but
+FreeDO was studied during development and its published notice purports to
+require owner approval for commercial use of knowledge obtained from it. The
+Retro3DO Core MIT licence grants rights only in Crown Park Computing's copyright
+and does not purport to grant or waive any third party's rights. This must not
+be described as clean-room merely because the current routines were later
+replaced.
+
+3DO and other product names and marks belong to their respective owners. Their
+use identifies compatibility and does not imply sponsorship or endorsement.

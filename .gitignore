@@ -1,0 +1,10 @@
+build/
+build-*/
+demo/build/
+.cache/
+compile_commands.json
+
+# The Opera oracle builds a second implementation beside this one to diff
+# against. Nothing of it belongs in the repository -- see tools/opera_oracle.
+tools/opera_oracle/build/
+tools/opera_oracle/opera/
