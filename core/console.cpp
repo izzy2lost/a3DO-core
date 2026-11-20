@@ -245,9 +245,24 @@ void Console::set_region(Region region) {
     // CLIO's display generator always turns the logical 320-wide framebuffer
     // into a 640-wide video signal (and doubles the height likewise), either
     // by interpolation or by pixel replication.
-    framebuffer_.assign(static_cast<size_t>(frame_width_ * 2) *
-                            (frame_height_ * 2),
+    size_framebuffer();
+}
+
+void Console::size_framebuffer() {
+    const int scale = output_scale();
+    framebuffer_.assign(static_cast<size_t>(frame_width_ * scale) *
+                            (frame_height_ * scale),
                         0xff000000u);
+}
+
+void Console::apply_render_scale(u32 scale) {
+    render_scale_ = scale;
+    hires_.configure(scale);
+    HiresStore* shadow = hires_.active() ? &hires_ : nullptr;
+    bus_.attach_hires(shadow);
+    madam_.set_hires(shadow);
+    vdlp_.set_hires(shadow);
+    size_framebuffer();
 }
 
 void Console::reset() {
@@ -270,6 +285,7 @@ void Console::reset() {
     samples_.clear();
     expansion_dma_count_ = 0;
     frame_count_ = 0;
+    hires_.clear();
     std::fill(framebuffer_.begin(), framebuffer_.end(), 0xff000000u);
 }
 
@@ -476,6 +492,11 @@ u32 Console::run_frame() {
     // The VDL root is latched at the field boundary. Each subsequent line is
     // sampled by the CLIO scanline callback during horizontal blank, matching
     // the order documented by the official 3DO Graphics Programming Guide.
+    const u32 wanted_scale = render_scale_request_.load(std::memory_order_acquire);
+    if (wanted_scale != render_scale_) {
+        apply_render_scale(wanted_scale);
+    }
+
     vdlp_.set_list_address(madam_.vdl_address());
     vdlp_.begin_field(frame_width_, frame_height_);
 
@@ -552,7 +573,7 @@ u32 Console::run_frame() {
 
     // Scanlines are already latched. The field boundary only expands the
     // logical signal to the hardware's 2x output; it does not reread VRAM.
-    vdlp_.finish_field_2x(framebuffer_.data(), frame_width_, frame_height_);
+    vdlp_.finish_field(framebuffer_.data(), frame_width_, frame_height_);
 
     ++frame_count_;
     return cpu_spent;
@@ -561,8 +582,8 @@ u32 Console::run_frame() {
 Frame Console::framebuffer() const {
     Frame frame;
     frame.pixels = framebuffer_.data();
-    frame.width  = frame_width_ * 2;
-    frame.height = frame_height_ * 2;
+    frame.width  = frame_width_ * output_scale();
+    frame.height = frame_height_ * output_scale();
     return frame;
 }
 

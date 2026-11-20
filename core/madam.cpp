@@ -1,8 +1,10 @@
 #include "madam.h"
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 
 #include "bus.h"
+#include "hires.h"
 #include "vdlp.h"
 
 namespace retro3do {
@@ -186,6 +188,91 @@ CelFormat cel_format_from_pre0(u32 pre0) {
 Madam::Madam(Bus& bus) : bus_(bus) {
     reset();
 }
+
+namespace {
+
+// The quad fill shared by the hardware grid and the high-resolution one.
+// Corners are whole pixels of whichever grid is being drawn. Each run of
+// pixels is handed over as a half-open span [from, to) on row y.
+//
+// Filled with the CEL engine's edge rules. Vertical edges are top-inclusive
+// and bottom-exclusive, while a permitted horizontal span includes BOTH edge
+// intersections. That final pixel is intentional hardware behaviour: omitting
+// it opens one-pixel holes between perspective-stretched texels, visible as
+// short streaks in road surfaces. Edge direction retains the CCB's
+// clockwise/counter-clockwise face selection. A folded quad can yield four
+// crossings, so sorted crossings are consumed in pairs rather than assuming
+// every row has exactly one span.
+template <class Emit>
+void fill_quad(const s64 xs[4], const s64 ys[4], s64 max_x, s64 max_y,
+               u32 flags, Emit emit) {
+    // Collapsed to a line: no area, nothing to fill.
+    if (xs[0] == xs[1] && xs[1] == xs[2] && xs[2] == xs[3]) {
+        return;
+    }
+
+    s64 lowest = ys[0];
+    s64 highest = ys[0];
+    for (int i = 1; i < 4; ++i) {
+        if (ys[i] < lowest) lowest = ys[i];
+        if (ys[i] > highest) highest = ys[i];
+    }
+    const s64 first_y = lowest < 0 ? 0 : lowest;
+    const s64 last_y = highest < max_y ? highest : max_y;
+
+    const bool allow_cw = (flags & kCcbAcw) != 0;
+    const bool allow_ccw = (flags & kCcbAccw) != 0;
+
+    struct Crossing { s64 x; bool downward; };
+    for (s64 y = first_y; y < last_y; ++y) {
+        Crossing crossing[4] = {};
+        int count = 0;
+
+        for (int edge = 0; edge < 4; ++edge) {
+            const int from = edge;
+            const int to = (edge + 1) & 3;
+            if (ys[from] == ys[to]) continue;
+            const s64 min_y = ys[from] < ys[to] ? ys[from] : ys[to];
+            const s64 max_edge_y = ys[from] < ys[to] ? ys[to] : ys[from];
+            if (y < min_y || y >= max_edge_y) continue;
+
+            const s64 numerator = (xs[to] - xs[from]) * (y - ys[from]);
+            crossing[count++] = {
+                xs[from] + numerator / (ys[to] - ys[from]),
+                ys[to] > ys[from],
+            };
+        }
+
+        for (int i = 1; i < count; ++i) {
+            const Crossing value = crossing[i];
+            int j = i;
+            while (j > 0 && crossing[j - 1].x > value.x) {
+                crossing[j] = crossing[j - 1];
+                --j;
+            }
+            crossing[j] = value;
+        }
+
+        for (int i = 0; i + 1 < count; i += 2) {
+            const bool downward = crossing[i].downward;
+            if (!((allow_cw && !downward) || (allow_ccw && downward))) {
+                continue;
+            }
+            s64 from = crossing[i].x;
+            s64 to = crossing[i + 1].x;
+            if (from < 0) from = 0;
+            // The right intersection is painted too.
+            if (to < max_x) ++to;
+            else to = max_x;
+            if (from < to) {
+                emit(static_cast<s32>(from), static_cast<s32>(to),
+                     static_cast<s32>(y));
+            }
+        }
+    }
+}
+
+}  // namespace
 
 void Madam::reset() {
     revision_ = kMadamRevisionGreen;
@@ -1048,6 +1135,13 @@ u16 Madam::sample(const Ccb& ccb, u32 sx, u32 sy) const {
 // a cel is being drawn, so it is done once rather than per pixel.
 void Madam::begin_cel(const Ccb& ccb) {
     build_scale_table();
+    if (hires_ != nullptr && hires_->active()) {
+        // Each cel claims shadow slots afresh; zero is reserved for "never".
+        if (++cel_serial_ == 0) {
+            hires_->clear_stamps();
+            cel_serial_ = 1;
+        }
+    }
     cel_flags_ = ccb.flags;
     cel_pixc_ = ccb.pixc;
     cel_pre1_ = ccb.pre1;
@@ -1151,6 +1245,18 @@ void Madam::process_pixel(s32 x, s32 y, u16 source, u16 amv, u16 raw_vh) {
     const u16 frame = static_cast<u16>((static_cast<u16>(bus_.read8(read_at)) << 8) |
                                        bus_.read8(read_at + 1));
 
+    const u16 final_pixel = blend(frame, source, amv, raw_vh);
+    const bool shadowed = hires_ != nullptr && hires_->active();
+    const u16 previous = shadowed ? bus_.read16(write_at) : 0;
+    bus_.write8(write_at, static_cast<u8>(final_pixel >> 8));
+    bus_.write8(write_at + 1, static_cast<u8>(final_pixel));
+    ++stats_.pixels_written;
+    if (shadowed) {
+        hires_after_store(write_at, final_pixel, previous);
+    }
+}
+
+u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
     const u32 pixel = (source | cel_pmode_or_) & cel_pmode_and_;
 
     // Two independent control words, chosen by the pixel's top bit - which is
@@ -1301,10 +1407,7 @@ void Madam::process_pixel(s32 x, s32 y, u16 source, u16 amv, u16 raw_vh) {
         default: break;
     }
 
-    const u32 final_pixel = (result & 0x7ffeu) | vh;
-    bus_.write8(write_at, static_cast<u8>(final_pixel >> 8));
-    bus_.write8(write_at + 1, static_cast<u8>(final_pixel));
-    ++stats_.pixels_written;
+    return static_cast<u16>((result & 0x7ffeu) | vh);
 }
 
 void Madam::put_pixel(s32 x, s32 y, u16 pixel, u16 shade, u16 raw_vh) {
@@ -1367,6 +1470,12 @@ void Madam::put_pixel(s32 x, s32 y, u16 pixel, u16 shade, u16 raw_vh) {
 void Madam::plot_texel(const Ccb& ccb, s32 px, s32 py, s32 step_x, s32 step_y,
                        s32 down_x, s32 down_y, s32 next_step_x, s32 next_step_y,
                        u16 pixel, u16 shade, u16 raw_vh) {
+    // The fine grid first: it initialises any shadow slot it claims from
+    // VRAM, which must still hold what was there before this texel.
+    if (hires_ != nullptr && hires_->active() && framebuffer_configured_) {
+        hires_plot_texel(ccb, px, py, step_x, step_y, down_x, down_y,
+                         next_step_x, next_step_y, pixel, shade, raw_vh);
+    }
     if (cel_mapper_ != Mapper::Arbitrary) {
         plot_footprint(ccb, px, py, step_x, step_y, pixel, shade, raw_vh);
         return;
@@ -1392,83 +1501,15 @@ void Madam::plot_texel(const Ccb& ccb, s32 px, s32 py, s32 step_x, s32 step_y,
 void Madam::plot_quad(const Ccb& ccb, s32 ax, s32 ay, s32 bx, s32 by,
                       s32 cx, s32 cy, s32 dx, s32 dy, u16 pixel, u16 shade,
                       u16 raw_vh) {
-    ax >>= 16; bx >>= 16; cx >>= 16; dx >>= 16;
-    ay >>= 16; by >>= 16; cy >>= 16; dy >>= 16;
-
-    // Collapsed to a line: no area, nothing to fill.
-    if (ax == bx && bx == cx && cx == dx) {
-        return;
-    }
-
-    const s32 max_x = static_cast<s32>(clip_width_);
-
-    s32 lowest = ay;
-    s32 highest = ay;
-    for (s32 v : {by, cy, dy}) {
-        if (v < lowest) lowest = v;
-        if (v > highest) highest = v;
-    }
-    const s32 first_y = lowest < 0 ? 0 : lowest;
-    const s32 last_y = highest < static_cast<s32>(clip_height_)
-                           ? highest
-                           : static_cast<s32>(clip_height_);
-
-    const s32 xs[4] = {ax, bx, cx, dx};
-    const s32 ys[4] = {ay, by, cy, dy};
-
-    struct Crossing { s32 x; bool downward; };
-    for (s32 y = first_y; y < last_y; ++y) {
-        Crossing crossing[4] = {};
-        int count = 0;
-
-        for (int edge = 0; edge < 4; ++edge) {
-            const int from = edge;
-            const int to = (edge + 1) & 3;
-            if (ys[from] == ys[to]) continue;
-            const s32 min_y = ys[from] < ys[to] ? ys[from] : ys[to];
-            const s32 max_edge_y = ys[from] < ys[to] ? ys[to] : ys[from];
-            if (y < min_y || y >= max_edge_y) continue;
-
-            const s64 numerator = static_cast<s64>(xs[to] - xs[from]) *
-                                  static_cast<s64>(y - ys[from]);
-            crossing[count++] = {
-                xs[from] + static_cast<s32>(numerator / (ys[to] - ys[from])),
-                ys[to] > ys[from],
-            };
-        }
-
-        for (int i = 1; i < count; ++i) {
-            const Crossing value = crossing[i];
-            int j = i;
-            while (j > 0 && crossing[j - 1].x > value.x) {
-                crossing[j] = crossing[j - 1];
-                --j;
-            }
-            crossing[j] = value;
-        }
-
-        const auto permitted = [&](int direction) {
-            return (((ccb.flags & kCcbAcw) != 0 && direction == 0) ||
-                    ((ccb.flags & kCcbAccw) != 0 && direction == 1));
-        };
-        const auto fill = [&](s32 from, s32 to) {
-            if (from < 0) from = 0;
-            // The right intersection is painted too. Express the inclusive
-            // hardware limit as a clipped half-open C++ loop without risking
-            // an overflow at INT_MAX.
-            if (to < max_x) ++to;
-            else to = max_x;
-            for (s32 x = from; x < to; ++x) {
-                put_pixel(x, y, pixel, shade, raw_vh);
-            }
-        };
-
-        for (int i = 0; i + 1 < count; i += 2) {
-            if (permitted(crossing[i].downward ? 1 : 0)) {
-                fill(crossing[i].x, crossing[i + 1].x);
-            }
-        }
-    }
+    const s64 xs[4] = {ax >> 16, bx >> 16, cx >> 16, dx >> 16};
+    const s64 ys[4] = {ay >> 16, by >> 16, cy >> 16, dy >> 16};
+    fill_quad(xs, ys, static_cast<s64>(clip_width_),
+              static_cast<s64>(clip_height_), ccb.flags,
+              [&](s32 from, s32 to, s32 y) {
+                  for (s32 x = from; x < to; ++x) {
+                      put_pixel(x, y, pixel, shade, raw_vh);
+                  }
+              });
 }
 
 void Madam::plot_footprint(const Ccb& ccb, s32 px, s32 py, s32 step_x,
@@ -1527,6 +1568,177 @@ void Madam::plot_footprint(const Ccb& ccb, s32 px, s32 py, s32 step_x,
             put_pixel(x, y, pixel, shade, raw_vh);
         }
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// High-resolution rendering
+// ---------------------------------------------------------------------------
+// The same texel, drawn onto a grid `scale` times finer. The footprints and
+// quads are exactly those of the hardware path, but their corners keep the
+// sub-pixel position that the 16.16 coordinates carry instead of being
+// truncated to the logical grid first. A one-to-one cel is the exception: it
+// covers exactly its logical pixel, so sprites and text stay crisp and line up
+// with everything the CPU draws.
+namespace {
+bool in_vram(u32 address) {
+    return address >= kVramBase && address < kVramBase + kVramSize;
+}
+}  // namespace
+
+void Madam::hires_plot_texel(const Ccb& ccb, s32 px, s32 py, s32 step_x,
+                             s32 step_y, s32 down_x, s32 down_y,
+                             s32 next_step_x, s32 next_step_y, u16 pixel,
+                             u16 shade, u16 raw_vh) {
+    const s64 scale = static_cast<s64>(hires_->scale());
+    const s64 max_x = static_cast<s64>(clip_width_) * scale;
+    const s64 max_y = static_cast<s64>(clip_height_) * scale;
+    const auto fine = [scale](s64 v) { return (v * scale) >> 16; };
+
+    // Most cels are opaque: their result does not depend on what is already
+    // in the framebuffer, so it is the same for every fine pixel the texel
+    // covers and is worked out once here rather than once per fine pixel.
+    const u32 processed = (pixel | cel_pmode_or_) & cel_pmode_and_;
+    const u32 control =
+        (processed & 0x8000u) ? (cel_pixc_ >> 16) : (cel_pixc_ & 0xffffu);
+    const bool reads_frame =
+        ((control >> 15) & 1u) != 0 || ((control >> 6) & 3u) == 2u;
+    HiresTexel texel{pixel, shade, raw_vh, !reads_frame,
+                     reads_frame ? u16{0} : blend(0, pixel, shade, raw_vh)};
+
+    if (cel_mapper_ == Mapper::Arbitrary) {
+        const s64 xs[4] = {fine(px), fine(static_cast<s64>(px) + step_x),
+                           fine(static_cast<s64>(down_x) + next_step_x),
+                           fine(down_x)};
+        const s64 ys[4] = {fine(py), fine(static_cast<s64>(py) + step_y),
+                           fine(static_cast<s64>(down_y) + next_step_y),
+                           fine(down_y)};
+        fill_quad(xs, ys, max_x, max_y, ccb.flags,
+                  [&](s32 from, s32 to, s32 y) { hires_span(y, from, to, texel); });
+        return;
+    }
+
+    s64 x0, x1, y0, y1;
+    if (cel_one_to_one_) {
+        x0 = static_cast<s64>(px >> 16) * scale;
+        y0 = static_cast<s64>(py >> 16) * scale;
+        x1 = x0 + scale;
+        y1 = y0 + scale;
+    } else {
+        // As plot_footprint: the reach is both step vectors together, and
+        // MARIA caps how far down one source row may be smeared.
+        s64 span_x = static_cast<s64>(step_x) + ccb.vdx;
+        s64 span_y = static_cast<s64>(step_y) + ccb.vdy;
+        if ((ccb.flags & kCcbMaria) != 0 && span_y > 0x10000) {
+            span_y = 0x10000;
+        }
+        x0 = fine(px);
+        x1 = fine(static_cast<s64>(px) + span_x);
+        y0 = fine(py);
+        y1 = fine(static_cast<s64>(py) + span_y);
+        if (x1 < x0) { const s64 t = x0; x0 = x1 + 1; x1 = t + 1; }
+        if (y1 < y0) { const s64 t = y0; y0 = y1 + 1; y1 = t + 1; }
+    }
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > max_x) x1 = max_x;
+    if (y1 > max_y) y1 = max_y;
+    if (x0 >= x1) return;
+    for (s64 y = y0; y < y1; ++y) {
+        hires_span(static_cast<s32>(y), static_cast<s32>(x0),
+                   static_cast<s32>(x1), texel);
+    }
+}
+
+// One run of fine pixels on one fine row. The logical pixel - and so the
+// VRAM slot - only changes every `scale` fine pixels, so the slot is resolved
+// once per logical pixel rather than once per fine one.
+void Madam::hires_span(s32 fy, s32 from, s32 to, const HiresTexel& texel) {
+    const s32 scale = static_cast<s32>(hires_->scale());
+    const s32 max_x = static_cast<s32>(clip_width_) * scale;
+    if (fy < 0 || fy >= static_cast<s32>(clip_height_) * scale) return;
+    if (from < 0) from = 0;
+    if (to > max_x) to = max_x;
+    if (from >= to) return;
+
+    const s32 y = fy / scale;
+    const s32 row = (fy % scale) * scale;
+    s32 x = from / scale;
+    s32 sx = from % scale;
+
+    for (s32 fx = from; fx < to; ++x, sx = 0) {
+        const s32 run_end = std::min(to, (x + 1) * scale);
+        const s32 run = run_end - fx;
+        fx = run_end;
+
+        const u32 write_at = write_base_ + pixel_offset(x, y, write_stride_);
+        if (!in_vram(write_at)) continue;
+        const u32 target = HiresStore::slot_of(write_at - kVramBase);
+
+        // The first time this cel reaches a slot, make sure its sub-pixels
+        // describe what VRAM holds right now. If something other than the CEL
+        // engine has written the pixel since, the old detail is gone and the
+        // slot restarts as a flat copy of it.
+        if (hires_->stamp(target) != cel_serial_) {
+            const u16 current = bus_.read16(write_at);
+            if (!hires_->usable(target, current)) {
+                hires_->fill(target, current);
+            }
+            hires_->validate(target, current);
+            hires_->set_stamp(target, cel_serial_);
+        }
+
+        u16* out = hires_->subpixels(target) + row + sx;
+        if (texel.opaque) {
+            for (s32 i = 0; i < run; ++i) out[i] = texel.value;
+            continue;
+        }
+
+        const u32 read_at = read_base_ + pixel_offset(x, y, read_stride_);
+        const u16* frame = out;
+        u16 flat = 0;
+        bool flat_frame = false;
+        if (read_at != write_at) {
+            if (in_vram(read_at)) {
+                const u32 source = HiresStore::slot_of(read_at - kVramBase);
+                const u16 current = bus_.read16(read_at);
+                if (hires_->usable(source, current)) {
+                    frame = hires_->subpixels(source) + row + sx;
+                } else {
+                    flat = current;
+                    flat_frame = true;
+                }
+            } else {
+                flat = bus_.read16(read_at);
+                flat_frame = true;
+            }
+        }
+        for (s32 i = 0; i < run; ++i) {
+            out[i] = blend(flat_frame ? flat : frame[i], texel.pixel,
+                           texel.shade, texel.raw_vh);
+        }
+    }
+}
+
+void Madam::hires_after_store(u32 write_at, u16 value, u16 previous) {
+    if (!in_vram(write_at)) {
+        return;
+    }
+    const u32 slot = HiresStore::slot_of(write_at - kVramBase);
+    // Normally the fine pass already drew this slot for the same texel. When
+    // it did not, the hardware painted a pixel the finer edge does not reach:
+    // the extra right-hand pixel of an inclusive span, or a stair-step. On the
+    // fine grid that pixel is still whatever was underneath, so the slot keeps
+    // (or takes) the picture from before the store. Filling it with the cel's
+    // colour instead puts a speck of stair-step back on every smooth edge.
+    if (hires_->stamp(slot) != cel_serial_) {
+        if (!hires_->usable(slot, previous)) {
+            hires_->fill(slot, previous);
+        }
+        hires_->set_stamp(slot, cel_serial_);
+    }
+    hires_->validate(slot, value);
 }
 
 

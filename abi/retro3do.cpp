@@ -61,11 +61,7 @@ void publish_frame(retro3do_t *emu) {
     if (frame.pixels == nullptr) {
         return;
     }
-    if (emu->mailbox.width() != frame.width ||
-        emu->mailbox.height() != frame.height) {
-        emu->mailbox.resize(frame.width, frame.height);
-    }
-    std::memcpy(emu->mailbox.writable(), frame.pixels,
+    std::memcpy(emu->mailbox.writable(frame.width, frame.height), frame.pixels,
                 static_cast<size_t>(frame.width) * frame.height * sizeof(u32));
     emu->mailbox.publish();
 }
@@ -237,6 +233,16 @@ uint32_t retro3do_get_cpu_scale_percent(const retro3do_t *emu) {
     return emu == nullptr ? 100u : emu->console.cpu_scale_percent();
 }
 
+void retro3do_set_render_scale(retro3do_t *emu, uint32_t scale) {
+    if (emu != nullptr) {
+        emu->console.set_render_scale(scale);
+    }
+}
+
+uint32_t retro3do_get_render_scale(const retro3do_t *emu) {
+    return emu == nullptr ? 1u : emu->console.render_scale();
+}
+
 void retro3do_reset(retro3do_t *emu) {
     if (emu == nullptr) {
         return;
@@ -301,13 +307,14 @@ int retro3do_acquire_frame(retro3do_t *emu, retro3do_frame *out) {
     if (emu == nullptr || out == nullptr) {
         return 0;
     }
-    const u32 *pixels = emu->mailbox.acquire();
+    int width = 0, height = 0;
+    const u32 *pixels = emu->mailbox.acquire(&width, &height);
     if (pixels == nullptr) {
         return 0;
     }
     out->pixels = pixels;
-    out->width = emu->mailbox.width();
-    out->height = emu->mailbox.height();
+    out->width = width;
+    out->height = height;
     return 1;
 }
 
@@ -321,13 +328,14 @@ int retro3do_current_frame(retro3do_t *emu, retro3do_frame *out) {
     // second one — it is the difference between showing a black screen and
     // knowing not to start drawing yet — so this reports on published frames
     // rather than on the buffer being non-null.
-    const u32 *pixels = emu->mailbox.current();
+    int width = 0, height = 0;
+    const u32 *pixels = emu->mailbox.current(&width, &height);
     if (pixels == nullptr || emu->mailbox.published() == 0) {
         return 0;
     }
     out->pixels = pixels;
-    out->width = emu->mailbox.width();
-    out->height = emu->mailbox.height();
+    out->width = width;
+    out->height = height;
     return 1;
 }
 

@@ -29,16 +29,23 @@ class FrameMailbox {
 public:
     FrameMailbox();
 
-    // Resize every slot. Safe only when neither side is mid-frame — call it
-    // from the producer between frames, as a region change does.
+    // Resize every slot. Safe only when neither side is mid-frame — before the
+    // emulator starts, say. A running producer uses writable(width, height).
     void resize(int width, int height);
 
-    int width() const { return width_; }
-    int height() const { return height_; }
+    // The size of the newest published frame.
+    int width() const { return width_.load(std::memory_order_acquire); }
+    int height() const { return height_.load(std::memory_order_acquire); }
 
     // --- producer ---------------------------------------------------------
     // The slot to write into. Stays valid until publish().
     u32* writable();
+
+    // The slot to write into, sized for a frame of this shape. Only the
+    // producer's own slot is touched, so the frame size can change while the
+    // consumer is still reading the last one - which is what changing the
+    // render scale mid-game does.
+    u32* writable(int width, int height);
 
     // Make the slot just written the newest frame. Constant time, wait-free.
     void publish();
@@ -53,6 +60,12 @@ public:
     // must draw something — a window resize, say — and no new frame has come.
     const u32* current() const;
 
+    // As acquire() and current(), also giving the size of that very frame.
+    // Prefer these: width() and height() describe the newest frame, which is
+    // not necessarily the one in hand.
+    const u32* acquire(int* width, int* height);
+    const u32* current(int* width, int* height) const;
+
     u64 published() const { return published_.load(std::memory_order_relaxed); }
     u64 consumed() const { return consumed_.load(std::memory_order_relaxed); }
 
@@ -60,8 +73,10 @@ private:
     static constexpr int kSlots = 3;
 
     std::vector<u32> slots_[kSlots];
-    int width_ = 0;
-    int height_ = 0;
+    int slot_width_[kSlots] = {};
+    int slot_height_[kSlots] = {};
+    std::atomic<int> width_{0};
+    std::atomic<int> height_{0};
 
     int writing_ = 0;
     int reading_ = 2;

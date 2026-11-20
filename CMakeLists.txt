@@ -57,6 +57,7 @@ add_library(retro3do_core STATIC
     core/dsp.cpp
     core/emulator_thread.cpp
     core/frame_mailbox.cpp
+    core/hires.cpp
     core/madam.cpp
     core/pad.cpp
     core/pbus.cpp
@@ -113,6 +114,7 @@ if(RETRO3DO_CORE_TESTS)
         tests/test_disc.cpp
         tests/test_dsp.cpp
         tests/test_frame_mailbox.cpp
+        tests/test_hires.cpp
         tests/test_madam.cpp
         tests/test_sport.cpp
         tests/test_vdlp.cpp

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "clio.h"
+#include "hires.h"
 #include "madam.h"
 #include "sport.h"
 
@@ -261,6 +262,7 @@ void Bus::write32(u32 address, u32 value) {
     }
     if (addr >= kVramBase && addr < kVramBase + kVramSize) {
         store_be32(&vram_[addr - kVramBase], value);
+        if (hires_ != nullptr) hires_->invalidate(addr - kVramBase, 4);
         return;
     }
     if (addr >= kNvramBase && addr < kNvramBase + kNvramSpan) {
@@ -294,6 +296,7 @@ void Bus::write16(u32 address, u16 value) {
     }
     if (addr >= kVramBase && addr < kVramBase + kVramSize) {
         store_be16(&vram_[addr - kVramBase], value);
+        if (hires_ != nullptr) hires_->invalidate(addr - kVramBase, 2);
         return;
     }
     if (is_device(addr)) {
@@ -316,6 +319,7 @@ void Bus::write8(u32 address, u8 value) {
     }
     if (address >= kVramBase && address < kVramBase + kVramSize) {
         vram_[address - kVramBase] = value;
+        if (hires_ != nullptr) hires_->invalidate(address - kVramBase, 1);
         return;
     }
     if (address >= kNvramBase && address < kNvramBase + kNvramSpan) {

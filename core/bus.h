@@ -18,6 +18,7 @@
 namespace retro3do {
 
 class Madam;
+class HiresStore;
 class Clio;
 class Sport;
 
@@ -143,6 +144,9 @@ public:
     void attach_madam(Madam* madam) { madam_ = madam; }
     void attach_clio(Clio* clio) { clio_ = clio; }
     void attach_sport(Sport* sport) { sport_ = sport; }
+    // The high-resolution shadow, when it is on. Every VRAM store through the
+    // bus marks the sub-pixels of the pixels it touched as stale.
+    void attach_hires(HiresStore* hires) { hires_ = hires; }
 
     // Load a BIOS image. Returns false if the image is missing or too large.
     bool load_bios(const u8* data, size_t size);
@@ -237,6 +241,7 @@ private:
     bool bios_loaded_ = false;
 
     Madam* madam_ = nullptr;
+    HiresStore* hires_ = nullptr;
     Clio*  clio_  = nullptr;
     Sport* sport_ = nullptr;
 

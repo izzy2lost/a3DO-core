@@ -106,10 +106,7 @@ void EmulatorThread::run() {
         // whether anyone is drawing, and does not care.
         const Frame frame = console_.framebuffer();
         if (frame.pixels != nullptr) {
-            if (mailbox_.width() != frame.width || mailbox_.height() != frame.height) {
-                mailbox_.resize(frame.width, frame.height);
-            }
-            std::memcpy(mailbox_.writable(), frame.pixels,
+            std::memcpy(mailbox_.writable(frame.width, frame.height), frame.pixels,
                         static_cast<size_t>(frame.width) * frame.height * sizeof(u32));
             mailbox_.publish();
         }

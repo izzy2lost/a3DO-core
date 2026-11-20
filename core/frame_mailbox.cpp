@@ -10,12 +10,14 @@ void FrameMailbox::resize(int width, int height) {
     if (width <= 0 || height <= 0) {
         return;
     }
-    width_ = width;
-    height_ = height;
+    width_.store(width, std::memory_order_release);
+    height_.store(height, std::memory_order_release);
 
     const size_t pixels = static_cast<size_t>(width) * height;
     for (int i = 0; i < kSlots; ++i) {
         slots_[i].assign(pixels, 0xff000000u);
+        slot_width_[i] = width;
+        slot_height_[i] = height;
     }
 
     writing_ = 0;
@@ -27,10 +29,22 @@ u32* FrameMailbox::writable() {
     return slots_[writing_].data();
 }
 
+u32* FrameMailbox::writable(int width, int height) {
+    if (width > 0 && height > 0 &&
+        (slot_width_[writing_] != width || slot_height_[writing_] != height)) {
+        slots_[writing_].assign(static_cast<size_t>(width) * height, 0xff000000u);
+        slot_width_[writing_] = width;
+        slot_height_[writing_] = height;
+    }
+    return slots_[writing_].data();
+}
+
 void FrameMailbox::publish() {
     // Hand the slot just written to the consumer and take back whatever it had.
     // A single exchange, so there is no window in which the consumer could see
     // an index that does not yet name a complete frame.
+    width_.store(slot_width_[writing_], std::memory_order_release);
+    height_.store(slot_height_[writing_], std::memory_order_release);
     const u32 previous = ready_.exchange(
         static_cast<u32>(writing_) | kFreshBit, std::memory_order_acq_rel);
 
@@ -53,6 +67,21 @@ const u32* FrameMailbox::acquire() {
 }
 
 const u32* FrameMailbox::current() const {
+    return slots_[reading_].data();
+}
+
+const u32* FrameMailbox::acquire(int* width, int* height) {
+    const u32* pixels = acquire();
+    if (pixels != nullptr) {
+        if (width != nullptr) *width = slot_width_[reading_];
+        if (height != nullptr) *height = slot_height_[reading_];
+    }
+    return pixels;
+}
+
+const u32* FrameMailbox::current(int* width, int* height) const {
+    if (width != nullptr) *width = slot_width_[reading_];
+    if (height != nullptr) *height = slot_height_[reading_];
     return slots_[reading_].data();
 }
 

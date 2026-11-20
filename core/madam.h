@@ -39,6 +39,7 @@
 namespace retro3do {
 
 class Bus;
+class HiresStore;
 
 // MADAM register offsets, relative to the base of its window.
 enum : u32 {
@@ -492,6 +493,10 @@ public:
         target_stride_bytes_ = stride_bytes;
     }
 
+    // Draw every cel a second time onto the high-resolution shadow of VRAM.
+    // Null turns it off. VRAM itself is drawn exactly as before either way.
+    void set_hires(HiresStore* hires) { hires_ = hires; }
+
     // Bring-up diagnostics: the last value written to each low register, and
     // whether it was ever written at all. Knowing WHICH registers a boot ROM
     // programs, and with what, is most of the work of finding out what it
@@ -656,6 +661,31 @@ private:
 
     u32 target_address_ = 0;
     u32 target_stride_bytes_ = 320 * 2;
+
+    // --- high-resolution rendering ----------------------------------------
+    HiresStore* hires_ = nullptr;
+    u32 cel_serial_ = 0;
+
+    // The pixel processor's arithmetic alone: given what is already in the
+    // framebuffer and the incoming source pixel, the value to store. Shared by
+    // the hardware path and the high-resolution one so both blend alike.
+    u16 blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const;
+
+    // The high-resolution passes. Coordinates are on the fine grid, `scale`
+    // fine pixels to one logical pixel.
+    void hires_plot_texel(const Ccb& ccb, s32 px, s32 py, s32 step_x,
+                          s32 step_y, s32 down_x, s32 down_y,
+                          s32 next_step_x, s32 next_step_y, u16 pixel,
+                          u16 shade, u16 raw_vh);
+    struct HiresTexel {
+        u16 pixel, shade, raw_vh;
+        bool opaque;   // the result does not depend on the framebuffer
+        u16 value;     // ...in which case this is it
+    };
+    void hires_span(s32 fine_y, s32 from, s32 to, const HiresTexel& texel);
+    // After the hardware path stores `value` at `write_at`, over `previous`,
+    // keep the shadow consistent with it.
+    void hires_after_store(u32 write_at, u16 value, u16 previous);
 
     MadamStats stats_;
     u32 written_value_[kTrackedRegisters] = {};

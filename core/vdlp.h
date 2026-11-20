@@ -23,6 +23,7 @@
 namespace retro3do {
 
 class Bus;
+class HiresStore;
 
 // A VDL control word.
 //
@@ -119,6 +120,16 @@ public:
     void process_scanline(u32 field_line);
     void finish_field_2x(u32* out, int width, int height);
 
+    // High-resolution output. With a shadow attached, each line also captures
+    // the sub-pixels of every VRAM pixel whose shadow is still current, and
+    // finish_field() produces a field `output_scale()` times the logical size:
+    // real detail where the CEL engine drew, and the hardware's own expansion
+    // (interpolated or replicated, as the line asks) everywhere else.
+    // Without one, finish_field() is exactly finish_field_2x().
+    void set_hires(const HiresStore* hires) { hires_ = hires; }
+    int output_scale() const;
+    void finish_field(u32* out, int width, int height);
+
     // The physical display generator always expands the logical framebuffer
     // to twice its width and height. With interpolation enabled the three
     // subpixels away from a pixel's cornerweight are colour averages; with it
@@ -159,6 +170,13 @@ private:
     u32 advance_line(u32 address) const;
 
     void render_line(u32* out, int width, u32 framebuffer_address, int line);
+    void capture_hires_line(int output_line, u32 framebuffer_address);
+    void finish_field_scaled(u32* out, int width, int height, int scale);
+
+    const HiresStore* hires_ = nullptr;
+    int field_scale_ = 1;
+    std::vector<u32> hires_frame_;
+    std::vector<u8> hires_mask_;
 
     Bus& bus_;
     u32 list_address_ = 0;

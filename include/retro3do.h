@@ -39,7 +39,8 @@
  *   retro3do_acquire_frame / retro3do_current_frame   (one consumer)
  *   retro3do_audio_pull / retro3do_audio_available    (one consumer)
  *   the pad functions, the stats function, retro3do_set_paused,
- *   retro3do_request_reset, retro3do_set_cpu_scale_percent
+ *   retro3do_request_reset, retro3do_set_cpu_scale_percent,
+ *   retro3do_set_render_scale
  *
  * Everything else — loading media, changing region, destroy — expects the
  * emulator to be stopped or paused; they reach into machine state that a
@@ -152,6 +153,20 @@ retro3do_region retro3do_get_region(const retro3do_t *emu);
  */
 void retro3do_set_cpu_scale_percent(retro3do_t *emu, uint32_t percent);
 uint32_t retro3do_get_cpu_scale_percent(const retro3do_t *emu);
+
+/*
+ * High-resolution rendering. 1 (the default) is the hardware picture: a
+ * 320-wide framebuffer that the display generator widens to 640. 2 to 6 also
+ * draw every cel onto a grid that many times finer, so polygons and scaled
+ * sprites keep their true sub-pixel edges, and frames come out at 320 * scale
+ * wide (240 or 288 * scale tall). Pixels the CPU draws itself, full-motion
+ * video for instance, stay at the hardware resolution. Values outside 1-6 are
+ * clamped. Safe to call at any time from any thread; it takes effect at the
+ * next frame, and frame width and height report the new size from then on.
+ */
+#define RETRO3DO_MAX_RENDER_SCALE 6
+void retro3do_set_render_scale(retro3do_t *emu, uint32_t scale);
+uint32_t retro3do_get_render_scale(const retro3do_t *emu);
 
 /* Reset the machine. A stopped machine resets immediately; a running one resets
  * at its next frame boundary, because resetting it from another thread midway

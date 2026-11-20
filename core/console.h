@@ -17,6 +17,7 @@
 #include "audio_ring.h"
 #include "disc.h"
 #include "clio.h"
+#include "hires.h"
 #include "madam.h"
 #include "dsp.h"
 #include "pbus.h"
@@ -86,6 +87,20 @@ public:
     }
     u32 cpu_scale_percent() const {
         return cpu_scale_percent_.load(std::memory_order_acquire);
+    }
+
+    // Draw the CEL engine's output at `scale` times the logical resolution
+    // (1 to 6). 1 is the hardware picture: 320 lines widened to 640 by the
+    // display generator. Anything above draws every cel onto a finer grid as
+    // well, and the field comes out at 320 * scale wide. Takes effect at the
+    // start of the next frame, on the emulator's own thread.
+    void set_render_scale(u32 scale) {
+        if (scale < 1u) scale = 1u;
+        if (scale > HiresStore::kMaxScale) scale = HiresStore::kMaxScale;
+        render_scale_request_.store(scale, std::memory_order_release);
+    }
+    u32 render_scale() const {
+        return render_scale_request_.load(std::memory_order_acquire);
     }
 
     void reset();
@@ -183,6 +198,13 @@ private:
 
     u64 frame_count_ = 0;
     std::atomic<u32> cpu_scale_percent_{100};
+
+    HiresStore hires_;
+    u32 render_scale_ = 1;
+    std::atomic<u32> render_scale_request_{1};
+    void apply_render_scale(u32 scale);
+    int output_scale() const { return render_scale_ > 1 ? static_cast<int>(render_scale_) : 2; }
+    void size_framebuffer();
 };
 
 }  // namespace retro3do

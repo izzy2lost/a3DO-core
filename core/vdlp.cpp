@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "bus.h"
+#include "hires.h"
 
 namespace retro3do {
 namespace {
@@ -223,6 +224,52 @@ void Vdlp::begin_field(int width, int height) {
                               static_cast<size_t>(height > 0 ? height : 0),
                           0xff000000u);
     line_interp_modes_.assign(static_cast<size_t>(height > 0 ? height : 0), 0);
+
+    field_scale_ = output_scale();
+    if (field_scale_ > 1 && field_active_) {
+        const size_t logical = static_cast<size_t>(width) * height;
+        hires_frame_.resize(logical * field_scale_ * field_scale_);
+        hires_mask_.assign(logical, 0);
+    }
+}
+
+int Vdlp::output_scale() const {
+    return (hires_ != nullptr && hires_->active())
+               ? static_cast<int>(hires_->scale())
+               : 1;
+}
+
+void Vdlp::capture_hires_line(int output_line, u32 framebuffer_address) {
+    const u8* vram = bus_.vram();
+    const int scale = field_scale_;
+    const u32 base = framebuffer_address & (kVramSize - 1u);
+    const size_t fine_width = static_cast<size_t>(field_width_) * scale;
+    u8* mask = hires_mask_.data() +
+               static_cast<size_t>(output_line) * field_width_;
+    u32* fine_row = hires_frame_.data() +
+                    static_cast<size_t>(output_line) * scale * fine_width;
+
+    for (int x = 0; x < field_width_; ++x) {
+        const u32 at = (base + framebuffer_offset(x, 0, field_width_)) &
+                       (kVramSize - 1u);
+        const u32 next = (at + 1u) & (kVramSize - 1u);
+        const u16 pixel =
+            static_cast<u16>((static_cast<u16>(vram[at]) << 8) | vram[next]);
+        const u32 slot = HiresStore::slot_of(at);
+        if (!hires_->usable(slot, pixel)) {
+            mask[x] = 0;
+            continue;
+        }
+        mask[x] = 1;
+        const u16* subs = hires_->subpixels(slot);
+        for (int sy = 0; sy < scale; ++sy) {
+            u32* out = fine_row + static_cast<size_t>(sy) * fine_width +
+                       static_cast<size_t>(x) * scale;
+            for (int sx = 0; sx < scale; ++sx) {
+                out[sx] = shade(subs[sy * scale + sx]);
+            }
+        }
+    }
 }
 
 void Vdlp::take_field_entry() {
@@ -296,8 +343,16 @@ void Vdlp::process_scanline(u32 line) {
                 for (int x = 0; x < field_width_; ++x) {
                     row[x] = 0xff000000u;
                 }
+                if (field_scale_ > 1) {
+                    std::memset(hires_mask_.data() +
+                                    static_cast<size_t>(output_line) * field_width_,
+                                0, static_cast<size_t>(field_width_));
+                }
             } else {
                 render_line(row, field_width_, field_buffer_, 0);
+                if (field_scale_ > 1) {
+                    capture_hires_line(static_cast<int>(output_line), field_buffer_);
+                }
             }
         }
     }
@@ -437,5 +492,83 @@ void Vdlp::finish_field_2x(u32* out, int width, int height) {
     }
 }
 
+
+namespace {
+
+// Blend two colours with an eight-bit weight on the second, red and blue in
+// one multiply and green in another.
+u32 lerp(u32 a, u32 b, u32 w) {
+    if (w == 0) return a;
+    const u32 iw = 256u - w;
+    const u32 rb = (((a & 0x00ff00ffu) * iw + (b & 0x00ff00ffu) * w) >> 8) &
+                   0x00ff00ffu;
+    const u32 g = (((a & 0x0000ff00u) * iw + (b & 0x0000ff00u) * w) >> 8) &
+                  0x0000ff00u;
+    return 0xff000000u | rb | g;
+}
+
+}  // namespace
+
+void Vdlp::finish_field(u32* out, int width, int height) {
+    if (field_scale_ <= 1) {
+        finish_field_2x(out, width, height);
+        return;
+    }
+    finish_field_scaled(out, width, height, field_scale_);
+}
+
+void Vdlp::finish_field_scaled(u32* out, int width, int height, int scale) {
+    if (out == nullptr || width <= 0 || height <= 0 ||
+        width != field_width_ || height != field_height_) {
+        return;
+    }
+
+    // Where a pixel's shadow was not current, expand it the way the display
+    // generator would: replicate, or interpolate towards the right and lower
+    // neighbours. At scale 2 the weights are exactly the hardware's halves.
+    u32 weight[HiresStore::kMaxScale];
+    for (int i = 0; i < scale; ++i) {
+        weight[i] = static_cast<u32>((i * 256) / scale);
+    }
+
+    const size_t fine_width = static_cast<size_t>(width) * scale;
+    for (int y = 0; y < height; ++y) {
+        const int below_y = y + 1 < height ? y + 1 : y;
+        const bool horizontal = (line_interp_modes_[y] & 1u) != 0;
+        const bool vertical = (line_interp_modes_[y] & 2u) != 0;
+        const u32* row = logical_frame_.data() + static_cast<size_t>(y) * width;
+        const u32* below_row =
+            logical_frame_.data() + static_cast<size_t>(below_y) * width;
+        const u8* mask = hires_mask_.data() + static_cast<size_t>(y) * width;
+        const size_t fine_y = static_cast<size_t>(y) * scale;
+
+        for (int x = 0; x < width; ++x) {
+            const size_t fine_x = static_cast<size_t>(x) * scale;
+            if (mask[x] != 0) {
+                for (int sy = 0; sy < scale; ++sy) {
+                    const size_t at = (fine_y + sy) * fine_width + fine_x;
+                    std::memcpy(out + at, hires_frame_.data() + at,
+                                static_cast<size_t>(scale) * sizeof(u32));
+                }
+                continue;
+            }
+            const int right_x = x + 1 < width ? x + 1 : x;
+            const u32 here = row[x];
+            const u32 right = horizontal ? row[right_x] : here;
+            const u32 below = vertical ? below_row[x] : here;
+            const u32 diagonal =
+                vertical ? (horizontal ? below_row[right_x] : below) : right;
+            for (int sy = 0; sy < scale; ++sy) {
+                const u32 wy = vertical ? weight[sy] : 0u;
+                u32* dst = out + (fine_y + sy) * fine_width + fine_x;
+                for (int sx = 0; sx < scale; ++sx) {
+                    const u32 wx = horizontal ? weight[sx] : 0u;
+                    dst[sx] = lerp(lerp(here, right, wx),
+                                   lerp(below, diagonal, wx), wy);
+                }
+            }
+        }
+    }
+}
 
 }  // namespace retro3do
