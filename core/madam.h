@@ -38,6 +38,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Bus;
 class HiresStore;
 
@@ -346,6 +348,8 @@ class Madam {
 public:
     explicit Madam(Bus& bus);
 
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     u32  read(u32 offset);

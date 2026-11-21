@@ -207,6 +207,23 @@ void retro3do_request_reset(retro3do_t *emu);
 uint32_t retro3do_run_frame(retro3do_t *emu);
 
 /* ------------------------------------------------------------------------ */
+/* Save states                                                               */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Write the whole machine to `path`, or put it back from one. Safe to call
+ * from any thread, running or not: a running emulator is parked between frames
+ * for the moment it takes and then carries on.
+ *
+ * A state belongs to the BIOS and disc it was made with. Loading one with a
+ * different disc or BIOS in the machine, or one from another version of the
+ * core, fails with the reason in retro3do_last_error and changes nothing.
+ * Return 1 on success, 0 on failure.
+ */
+int retro3do_save_state(retro3do_t *emu, const char *path);
+int retro3do_load_state(retro3do_t *emu, const char *path);
+
+/* ------------------------------------------------------------------------ */
 /* Video                                                                     */
 /* ------------------------------------------------------------------------ */
 

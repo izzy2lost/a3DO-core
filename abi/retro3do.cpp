@@ -6,6 +6,8 @@
 // say about it", the behaviour has been put in the wrong place.
 #include "retro3do.h"
 
+#include <cstdio>
+#include <functional>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -256,6 +258,68 @@ void retro3do_reset(retro3do_t *emu) {
     } else {
         emu->console.reset();
     }
+}
+
+// --- save states -----------------------------------------------------------
+
+namespace {
+
+// Run `body` with the emulator thread parked, then start it again if it was
+// going. A state must be taken between frames; stopping the thread is the
+// simplest way to be between frames, and it costs one join.
+int with_machine_stopped(retro3do_t *emu, const std::function<int()> &body) {
+    const bool was_running = emu->thread.running();
+    // Stopping un-pauses the thread so it can notice the stop. A game paused
+    // behind a menu must still be paused when it comes back.
+    const bool was_paused = emu->thread.paused();
+    if (was_running) emu->thread.stop();
+    const int result = body();
+    if (was_running) {
+        emu->thread.set_paused(was_paused);
+        emu->thread.start();
+    }
+    return result;
+}
+
+}  // namespace
+
+int retro3do_save_state(retro3do_t *emu, const char *path) {
+    if (emu == nullptr || path == nullptr) return 0;
+    return with_machine_stopped(emu, [&] {
+        const std::vector<u8> state = emu->console.save_state();
+        // Written beside the target and renamed over it, so a full disk or a
+        // crash mid-write leaves the previous state in the slot, not half of
+        // the new one.
+        const std::string tmp = std::string(path) + ".tmp";
+        std::FILE *f = std::fopen(tmp.c_str(), "wb");
+        if (f == nullptr) return fail(emu, "could not write the save state");
+        const bool written = std::fwrite(state.data(), 1, state.size(), f) == state.size();
+        const bool closed = std::fclose(f) == 0;
+        if (!written || !closed || std::rename(tmp.c_str(), path) != 0) {
+            std::remove(tmp.c_str());
+            return fail(emu, "could not write the save state");
+        }
+        return 1;
+    });
+}
+
+int retro3do_load_state(retro3do_t *emu, const char *path) {
+    if (emu == nullptr || path == nullptr) return 0;
+    std::FILE *f = std::fopen(path, "rb");
+    if (f == nullptr) return fail(emu, "there is no save state there");
+    std::vector<u8> state;
+    u8 chunk[65536];
+    size_t got = 0;
+    while ((got = std::fread(chunk, 1, sizeof chunk, f)) > 0) {
+        state.insert(state.end(), chunk, chunk + got);
+    }
+    std::fclose(f);
+    return with_machine_stopped(emu, [&] {
+        if (!emu->console.load_state(state.data(), state.size())) {
+            return fail_from_console(emu, "could not load that save state");
+        }
+        return 1;
+    });
 }
 
 // --- running ---------------------------------------------------------------

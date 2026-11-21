@@ -26,6 +26,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Arm60;
 class Dsp;
 
@@ -355,6 +357,8 @@ class Clio {
 public:
     explicit Clio(Arm60& cpu);
 
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     // Called with the number of CPU cycles that have just elapsed. Advances the

@@ -27,6 +27,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Bus;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +109,8 @@ public:
     Arm60& operator=(const Arm60&) = delete;
 
     // Return the CPU to its power-on state and enter the reset vector.
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     // Run until at least `cycles` have elapsed. Returns the number actually

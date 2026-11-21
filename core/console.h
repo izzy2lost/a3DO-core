@@ -105,6 +105,13 @@ public:
 
     void reset();
 
+    // The whole machine as a save state, and back. Call between frames, on
+    // the thread that runs them. A state is refused (false, reason in
+    // last_error) if it is damaged, from another version, or was made with a
+    // different BIOS or disc than the ones loaded now.
+    std::vector<u8> save_state();
+    bool load_state(const u8* data, size_t size);
+
     // Emulate one video frame. Returns the number of CPU cycles spent.
     u32 run_frame();
 

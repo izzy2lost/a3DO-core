@@ -35,6 +35,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 // What the DSPP needs from the rest of the machine. The DMA channels belong to
 // MADAM and the interrupt belongs to CLIO, so neither lives here.
 class DspHost {
@@ -67,6 +69,8 @@ public:
     // words packed as (right << 16) | left. Does nothing unless started.
     u32 run();
 
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     // Started and stopped by the CPU through CLIO. A stopped DSPP is not

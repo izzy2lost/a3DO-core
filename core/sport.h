@@ -55,6 +55,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Bus;
 
 // A SPORT page. Established from the ROM's memory test, which verifies exactly
@@ -86,6 +88,8 @@ class Sport {
 public:
     explicit Sport(Bus& bus) : bus_(bus) {}
 
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     // A read in the copy window latches the source page.

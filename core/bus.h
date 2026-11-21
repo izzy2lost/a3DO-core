@@ -17,6 +17,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Madam;
 class HiresStore;
 class Clio;
@@ -139,6 +141,8 @@ public:
     Bus(const Bus&) = delete;
     Bus& operator=(const Bus&) = delete;
 
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     void attach_madam(Madam* madam) { madam_ = madam; }

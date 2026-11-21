@@ -34,6 +34,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Disc;
 
 // Poll Register bits, from the patent's table.
@@ -151,6 +153,7 @@ public:
     void tick(u32 cycles) override;
     void reset() override;
     u8 drive_status() const;
+    void serialize(StateIO& s);
 
 private:
     void build_reply(u8 command);

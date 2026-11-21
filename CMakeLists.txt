@@ -62,6 +62,7 @@ add_library(retro3do_core STATIC
     core/pad.cpp
     core/pbus.cpp
     core/sport.cpp
+    core/state.cpp
     core/vdlp.cpp
     core/xbus.cpp
     abi/retro3do.cpp
@@ -117,6 +118,7 @@ if(RETRO3DO_CORE_TESTS)
         tests/test_hires.cpp
         tests/test_madam.cpp
         tests/test_sport.cpp
+        tests/test_state.cpp
         tests/test_vdlp.cpp
     )
     # The machine's own tests are allowed inside it; they are what the internals

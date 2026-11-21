@@ -22,6 +22,8 @@
 
 namespace retro3do {
 
+class StateIO;
+
 class Bus;
 class HiresStore;
 
@@ -89,6 +91,8 @@ public:
 
     explicit Vdlp(Bus& bus);
 
+    // Save or restore everything this part of the machine holds (state.cpp).
+    void serialize(StateIO& s);
     void reset();
 
     // Where the display list starts. Written by MADAM in the real machine; for
