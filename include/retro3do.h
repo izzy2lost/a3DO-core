@@ -346,6 +346,37 @@ int retro3do_take_nvram(retro3do_t *emu, uint8_t *out, uint32_t capacity,
 int retro3do_restore_nvram(retro3do_t *emu, const uint8_t *data, uint32_t size);
 
 /* ------------------------------------------------------------------------ */
+/* Inspection (achievements)                                                 */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Called after every emulated frame on the thread that emulated it (the
+ * emulator thread, or the caller of retro3do_run_frame), between frames. It is
+ * the one place machine memory may be read while the machine is running.
+ * Keep it short: the next frame waits for it. Pass NULL to turn it off.
+ */
+typedef void (*retro3do_frame_hook)(void *user);
+void retro3do_set_frame_hook(retro3do_t *emu, retro3do_frame_hook hook, void *user);
+
+/*
+ * Copy main RAM (DRAM, two megabytes at 0x000000) in the machine's own byte
+ * order, which is big-endian. Returns how many of `count` bytes lay inside
+ * DRAM; the rest are zeroed. Call it from the frame hook, or while the
+ * machine is stopped or paused.
+ */
+uint32_t retro3do_read_ram(const retro3do_t *emu, uint32_t address, uint8_t *out,
+                           uint32_t count);
+
+/*
+ * Read `count` 2048-byte user sectors of the disc in the drive, from `lba`
+ * (sector 0 holds the Opera volume header). A running machine is parked
+ * between frames for the moment it takes. Returns 1 on success, 0 when there
+ * is no disc or a sector lies outside it.
+ */
+int retro3do_read_disc_sectors(retro3do_t *emu, uint32_t lba, uint32_t count,
+                               uint8_t *out);
+
+/* ------------------------------------------------------------------------ */
 /* Diagnostics                                                               */
 /* ------------------------------------------------------------------------ */
 

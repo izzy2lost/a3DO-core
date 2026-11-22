@@ -288,3 +288,37 @@ TEST(nvram_is_only_handed_out_when_the_machine_has_written_to_it) {
     // not recognise rather than refusing to boot.
     CHECK_EQ(retro3do_restore_nvram(machine.emu, save.data(), size), 1);
 }
+
+namespace {
+void count_frame(void *user) { ++*static_cast<int *>(user); }
+}  // namespace
+
+TEST(the_frame_hook_runs_once_per_frame_on_either_driver) {
+    Machine machine;
+    int frames = 0;
+    retro3do_set_frame_hook(machine.emu, &count_frame, &frames);
+    retro3do_run_frame(machine.emu);
+    retro3do_run_frame(machine.emu);
+    CHECK_EQ(frames, 2);
+
+    retro3do_start(machine.emu);
+    CHECK(wait_until([&] { return frames >= 5; }));
+    retro3do_stop(machine.emu);
+    retro3do_set_frame_hook(machine.emu, nullptr, nullptr);
+    const int stopped_at = frames;
+    retro3do_run_frame(machine.emu);
+    CHECK_EQ(frames, stopped_at);
+}
+
+TEST(ram_reads_stop_at_the_end_of_dram_and_discs_must_be_present) {
+    Machine machine;
+    retro3do_run_frame(machine.emu);
+    unsigned char bytes[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+    CHECK_EQ(retro3do_read_ram(machine.emu, 0x1FFFFC, bytes, 8), 4u);
+    CHECK_EQ(int(bytes[4]), 0);
+    CHECK_EQ(int(bytes[7]), 0);
+    CHECK_EQ(retro3do_read_ram(machine.emu, 0x300000, bytes, 1), 0u);
+
+    unsigned char sector[2048];
+    CHECK_EQ(retro3do_read_disc_sectors(machine.emu, 0, 1, sector), 0);
+}

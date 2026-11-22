@@ -121,6 +121,8 @@ void EmulatorThread::run() {
             console_.bus().clear_nvram_dirty();
         }
 
+        call_frame_hook();
+
         const auto finished = Clock::now();
         const double this_frame_ms =
             std::chrono::duration<double, std::milli>(finished - started).count();

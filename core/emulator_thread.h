@@ -86,6 +86,19 @@ public:
 
     EmulatorStats stats() const;
 
+    // Called on this thread after every emulated frame, between frames, so
+    // the callee may read machine memory without racing the CPU. Used for
+    // achievement checks. Set it before start(); null turns it off.
+    using FrameHook = void (*)(void* user);
+    void set_frame_hook(FrameHook hook, void* user) {
+        frame_hook_user_.store(user, std::memory_order_release);
+        frame_hook_.store(hook, std::memory_order_release);
+    }
+    void call_frame_hook() const {
+        if (const FrameHook hook = frame_hook_.load(std::memory_order_acquire))
+            hook(frame_hook_user_.load(std::memory_order_acquire));
+    }
+
 private:
     void run();
 
@@ -97,6 +110,8 @@ private:
     std::atomic<bool> should_stop_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> reset_requested_{false};
+    std::atomic<FrameHook> frame_hook_{nullptr};
+    std::atomic<void*> frame_hook_user_{nullptr};
     mutable std::mutex nvram_lock_;
     std::vector<u8> nvram_snapshot_;
     bool nvram_pending_ = false;

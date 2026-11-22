@@ -362,6 +362,7 @@ uint32_t retro3do_run_frame(retro3do_t *emu) {
     }
     const u32 cycles = emu->console.run_frame();
     publish_frame(emu);
+    emu->thread.call_frame_hook();
     return cycles;
 }
 
@@ -536,3 +537,40 @@ void retro3do_get_stats(const retro3do_t *emu, retro3do_stats *out) {
 }
 
 }  // extern "C"
+
+// --- inspection ------------------------------------------------------------
+
+void retro3do_set_frame_hook(retro3do_t *emu, retro3do_frame_hook hook, void *user) {
+    if (emu != nullptr) emu->thread.set_frame_hook(hook, user);
+}
+
+uint32_t retro3do_read_ram(const retro3do_t *emu, uint32_t address, uint8_t *out,
+                           uint32_t count) {
+    if (emu == nullptr || out == nullptr) return 0;
+    const u8 *dram = mut(emu)->console.bus().dram();
+    uint32_t backed = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint64_t at = uint64_t{address} + i;
+        if (at < kDramSize) {
+            out[i] = dram[at];
+            ++backed;
+        } else {
+            out[i] = 0;
+        }
+    }
+    return backed;
+}
+
+int retro3do_read_disc_sectors(retro3do_t *emu, uint32_t lba, uint32_t count,
+                               uint8_t *out) {
+    if (emu == nullptr || out == nullptr) return 0;
+    if (!emu->console.disc_loaded()) return fail(emu, "no disc in the drive");
+    return with_machine_stopped(emu, [&] {
+        Disc &disc = emu->console.mutable_disc();
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!disc.read_sector(lba + i, out + size_t{i} * 2048))
+                return fail(emu, "could not read that sector of the disc");
+        }
+        return 1;
+    });
+}

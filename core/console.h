@@ -71,6 +71,9 @@ public:
     void eject_disc();
     bool disc_loaded() const { return disc_.is_open(); }
     const Disc& disc() const { return disc_; }
+    // For reading sectors outside emulation (achievement hashing). Only while
+    // the emulator thread is stopped: reads move the image's file position.
+    Disc& mutable_disc() { return disc_; }
 
     void set_region(Region region);
     Region region() const { return region_; }
