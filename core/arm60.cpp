@@ -1038,7 +1038,22 @@ u32 Arm60::exec_msr(const Decoded& d) {
         const unsigned rot = ((instruction >> 8) & 0xfu) * 2u;
         value = ror32(raw_value, rot);
     } else {
-        value = regs_[instruction & 0xfu];
+        // ARMv3 says bits 11-4 of the register form should be zero, but the
+        // ARM60 does not check them: they are the ordinary data-processing
+        // shifter field, and the register goes through the barrel shifter
+        // first. Software relies on it. Blade Force keeps four flags in the
+        // low bits of a register and moves them into N, Z, C and V with
+        // `MSR CPSR, Rm, ROR #4`; read unshifted, every flag comes out clear,
+        // its terrain fill never spreads, and the world draws nothing.
+        // Only the value matters - MSR replaces the flags the shift would set.
+        const unsigned rm = instruction & 0xfu;
+        const unsigned shift_type = (instruction >> 5) & 0x3u;
+        const bool by_register = (instruction & (1u << 4)) != 0;
+        const unsigned amount = by_register
+                                    ? (regs_[(instruction >> 8) & 0xfu] & 0xffu)
+                                    : ((instruction >> 7) & 0x1fu);
+        bool carry = (cpsr_ & kFlagC) != 0;
+        value = shift_operand(regs_[rm], shift_type, amount, by_register, carry);
     }
 
     const Mode current = mode();

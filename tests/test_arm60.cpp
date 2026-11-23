@@ -154,6 +154,20 @@ TEST(immediate_lsr_zero_means_shift_by_thirty_two) {
     CHECK_EQ(m.cpu.reg(2), 0u);
 }
 
+TEST(msr_register_form_goes_through_the_barrel_shifter) {
+    // MSR CPSR_f, r5, ROR #4 -- bits 11-4 are "should be zero" in ARMv3, but
+    // the ARM60 shifts the register by them. Blade Force moves four flags
+    // from the low bits of r5 into N Z C V this way (0xE129F265 in the game).
+    Machine m{kAlways | 0x0128F000u | (4u << 7) | (3u << 5) | 5u};
+    m.cpu.set_reg(5, 0xAu);   // 1010: N and C set, Z and V clear
+    m.step();
+    CHECK((m.cpu.cpsr() & kFlagN) != 0);
+    CHECK((m.cpu.cpsr() & kFlagZ) == 0);
+    CHECK((m.cpu.cpsr() & kFlagC) != 0);
+    CHECK((m.cpu.cpsr() & kFlagV) == 0);
+    CHECK_EQ(m.cpu.reg(5), 0xAu);
+}
+
 // ---------------------------------------------------------------------------
 // Branches
 // ---------------------------------------------------------------------------
