@@ -69,6 +69,11 @@ bool EmulatorThread::take_nvram(std::vector<u8>& out) {
     return true;
 }
 
+void EmulatorThread::discard_nvram() {
+    std::lock_guard<std::mutex> guard(nvram_lock_);
+    nvram_pending_ = false;
+}
+
 EmulatorStats EmulatorThread::stats() const {
     EmulatorStats s;
     s.frames_emulated = frames_emulated_.load(std::memory_order_relaxed);

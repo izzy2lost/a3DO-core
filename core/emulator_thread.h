@@ -83,6 +83,10 @@ public:
     // when the display thread comes asking. The copy is taken at a frame
     // boundary, so what comes out is always a whole consistent image.
     bool take_nvram(std::vector<u8>& out);
+    // Forget a snapshot nobody has taken yet. For when the NVRAM is being
+    // replaced: the snapshot is of the image going away, and handing it out
+    // afterwards would write one game's saves over another's.
+    void discard_nvram();
 
     EmulatorStats stats() const;
 

@@ -342,8 +342,19 @@ uint32_t retro3do_nvram_size(const retro3do_t *emu);
 int retro3do_take_nvram(retro3do_t *emu, uint8_t *out, uint32_t capacity,
                         uint32_t *out_size);
 
-/* Put a saved image back. Do this before starting, or while paused. */
+/*
+ * Put a saved image back. Safe at any time: a running machine is stopped
+ * between frames for it. A snapshot the machine took of the image being
+ * replaced, and nobody has collected, is dropped - so collect it first with
+ * retro3do_take_nvram if it is to be kept.
+ */
 int retro3do_restore_nvram(retro3do_t *emu, const uint8_t *data, uint32_t size);
+
+/*
+ * Make the NVRAM formatted-but-empty, as a console that has never saved
+ * anything. The same rules about uncollected snapshots apply.
+ */
+int retro3do_format_nvram(retro3do_t *emu);
 
 /* ------------------------------------------------------------------------ */
 /* Inspection (achievements)                                                 */

@@ -509,10 +509,26 @@ int retro3do_restore_nvram(retro3do_t *emu, const uint8_t *data, uint32_t size) 
     if (emu == nullptr || data == nullptr) {
         return 0;
     }
-    if (!emu->console.bus().restore_nvram(data, size)) {
-        return fail(emu, "that save data is not a valid NVRAM image");
+    return with_machine_stopped(emu, [&] {
+        if (!emu->console.bus().restore_nvram(data, size)) {
+            return fail(emu, "that save data is not a valid NVRAM image");
+        }
+        emu->thread.discard_nvram();
+        return 1;
+    });
+}
+
+int retro3do_format_nvram(retro3do_t *emu) {
+    if (emu == nullptr) {
+        return 0;
     }
-    return 1;
+    return with_machine_stopped(emu, [&] {
+        emu->console.bus().format_nvram();
+        // A fresh image is not a save worth writing back until a game uses it.
+        emu->console.bus().clear_nvram_dirty();
+        emu->thread.discard_nvram();
+        return 1;
+    });
 }
 
 // --- diagnostics -----------------------------------------------------------
