@@ -122,6 +122,13 @@ public:
     // and the debugger; the emulator proper calls run().
     u32 step();
 
+private:
+    // The body of step(), which run() also uses directly so that the loop
+    // over a slice's instructions pays no call per instruction.
+    u32 step_inline();
+
+public:
+
     // The interrupt inputs, in both flavours.
     //
     // `set_irq` holds the line, which is the textbook model: while it is high

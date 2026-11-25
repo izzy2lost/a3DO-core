@@ -4,6 +4,16 @@
 #include <cstddef>
 #include <cstdint>
 
+// For the few small functions on the hottest paths that the compiler will not
+// always inline by itself, where a call per emulated instruction shows up.
+#if defined(_MSC_VER)
+#define RETRO3DO_ALWAYS_INLINE __forceinline
+#elif defined(__GNUC__)
+#define RETRO3DO_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define RETRO3DO_ALWAYS_INLINE inline
+#endif
+
 namespace retro3do {
 
 using u8  = std::uint8_t;

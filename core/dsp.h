@@ -104,8 +104,29 @@ private:
     // map. Precomputed for all eight maps.
     static u16 register_base(u32 map, u32 reg);
 
-    u16  read(u32 address);
-    void write(u32 address, u16 value);
+    // Plain data memory inline, because nearly every operand is; the I/O
+    // window from 0x70 to 0xFF (reads) and the registers at the top (writes)
+    // go to the full decode in dsp.cpp, which also handles plain memory and
+    // is the reference these must agree with.
+    u16 read(u32 address) {
+        if (address < 0x70) return data_[address];
+        if (address >= 0x100) {
+            const u32 shifted = address - 0x100;
+            return data_[shifted < 0x200 ? (shifted | 0x100) : (shifted & 0x7f)];
+        }
+        return read_io(address);
+    }
+    void write(u32 address, u16 value) {
+        const u32 a = address & 0x3ff;
+        if (a >= 0x100 && a < 0x3e0) {
+            const u32 shifted = a - 0x100;
+            data_[shifted < 0x200 ? (shifted | 0x100) : (shifted + 0x100)] = value;
+            return;
+        }
+        write_io(address, value);
+    }
+    u16  read_io(u32 address);
+    void write_io(u32 address, u16 value);
 
     struct OperandGroup {
         std::array<u16, 3> values{};

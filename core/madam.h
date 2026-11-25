@@ -616,6 +616,33 @@ private:
     u32 cel_pixel_mask_ = 0;
     bool cel_transparent_mask_ = true;
 
+    // The same per-cel state, decoded for the pixel processor. Each of PIXC's
+    // two control words is unpacked here once per cel rather than once per
+    // pixel, and so are the CCB and CECONTROL bits blend() consults. Derived
+    // entirely from the fields above, so rebuilt whenever they change and
+    // never saved.
+    struct BlendHalf {
+        const u8* fixed_row;   // g_scale[mxf][dv1], for the fixed multiplier
+        u8 dv1, dv2, s1, s2, ms, mxf;
+        u8 negate, extend, no_clip, dv3, av;
+    };
+    BlendHalf blend_half_[2] = {};
+    s32 blend_mask1_ = 0xff;
+    s32 blend_mask2_ = 0;
+    bool blend_fix_black_ = true;
+    bool blend_plut_pos_ = false;
+    bool blend_swap_hv_ = false;
+    u32 blend_b15_ = 0;
+    u32 blend_b0_ = 0;
+    u32 decode_blue_mode_ = 0;
+    bool blend_reads_frame_[2] = {true, true};
+    // process_pixel's memory of its last blend; see there.
+    bool blend_memo_valid_ = false;
+    u32 blend_memo_source_ = 0;
+    u32 blend_memo_frame_ = 0;
+    u16 blend_memo_result_ = 0;
+    void prepare_blend();
+
     // The tail of a cel is a bank of load-controlled registers, not a fixed
     // structure. A CCB with YOXY/LDSIZE/LDPRS/LDPPMP clear omits that group and
     // inherits the value the preceding cel left behind. PRE0/PRE1 persist too.

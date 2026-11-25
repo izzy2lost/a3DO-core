@@ -2,6 +2,9 @@
 #include "console.h"
 
 #include <cstdio>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #include "demo_rom.h"
 
@@ -289,18 +292,43 @@ void Console::reset() {
     std::fill(framebuffer_.begin(), framebuffer_.end(), 0xff000000u);
 }
 
+namespace {
+// Index of the lowest set bit of a value that is not zero.
+u32 lowest_set_bit(u32 v) {
+#if defined(_MSC_VER)
+    unsigned long index;
+    _BitScanForward(&index, v);
+    return static_cast<u32>(index);
+#else
+    return static_cast<u32>(__builtin_ctz(v));
+#endif
+}
+}  // namespace
+
 void Console::apply_write_watch() {
     WriteWatch& watch = bus_.write_watch();
     if (!watch.dirty) {
         return;
     }
-    for (u32 page = 0; page < WriteWatch::kPages; ++page) {
-        if (watch.is_dirty(page)) {
-            cpu_.invalidate_decode_cache(page * WriteWatch::kPageBytes,
-                                         WriteWatch::kPageBytes);
+    // This runs every half scanline and almost every one finds a write, so
+    // it visits only the pages that are set, in ascending order, and clears
+    // as it goes rather than testing all of them one by one. Taken 32 bits
+    // at a time, which is what a 32-bit CPU can test and shift cheaply.
+    for (u32 word = 0; word < WriteWatch::kWords; ++word) {
+        const u64 both = watch.bits[word];
+        if (both == 0) continue;
+        watch.bits[word] = 0;
+        for (u32 half = 0; half < 2; ++half) {
+            u32 bits = static_cast<u32>(both >> (half * 32u));
+            while (bits != 0) {
+                const u32 page = word * 64u + half * 32u + lowest_set_bit(bits);
+                bits &= bits - 1u;
+                cpu_.invalidate_decode_cache(page * WriteWatch::kPageBytes,
+                                             WriteWatch::kPageBytes);
+            }
         }
     }
-    watch.clear();
+    watch.dirty = false;
 }
 
 // Move a sector from the drive into memory.

@@ -158,13 +158,52 @@ public:
 
     // --- CPU-visible access ----------------------------------------------
     // The 3DO is big-endian as the CPU sees it; these do the byte order.
-    u32  read32(u32 address);
-    u16  read16(u32 address);
-    u8   read8(u32 address);
+    //
+    // Plain DRAM and VRAM are handled here, inline, because every pixel the
+    // cel engine draws and most of what the CPU and DSP touch is one of them,
+    // and a call per byte was a measurable share of a slow phone's frame.
+    // Everything else - the ROM overlay, NVRAM, the chips, the hi-res shadow -
+    // goes to the full decode in bus.cpp, which handles every address on its
+    // own and is the reference for what the fast paths must match.
+    u32 read32(u32 address) {
+        const u32 addr = address & ~u32{3};
+        if (const u8* p = fast_read(addr)) return load32(p);
+        return read32_slow(address);
+    }
+    u16 read16(u32 address) {
+        const u32 addr = address & ~u32{1};
+        if (const u8* p = fast_read(addr)) return static_cast<u16>((p[0] << 8) | p[1]);
+        return read16_slow(address);
+    }
+    u8 read8(u32 address) {
+        if (const u8* p = fast_read(address)) return *p;
+        return read8_slow(address);
+    }
 
-    void write32(u32 address, u32 value);
-    void write16(u32 address, u16 value);
-    void write8(u32 address, u8 value);
+    void write32(u32 address, u32 value) {
+        const u32 addr = address & ~u32{3};
+        if (u8* p = fast_write(addr, 4)) {
+            p[0] = static_cast<u8>(value >> 24); p[1] = static_cast<u8>(value >> 16);
+            p[2] = static_cast<u8>(value >> 8);  p[3] = static_cast<u8>(value);
+            return;
+        }
+        write32_slow(address, value);
+    }
+    void write16(u32 address, u16 value) {
+        const u32 addr = address & ~u32{1};
+        if (u8* p = fast_write(addr, 2)) {
+            p[0] = static_cast<u8>(value >> 8); p[1] = static_cast<u8>(value);
+            return;
+        }
+        write16_slow(address, value);
+    }
+    void write8(u32 address, u8 value) {
+        if (u8* p = fast_write(address, 1)) { *p = value; return; }
+        write8_slow(address, value);
+    }
+
+    // Whether a read here is plain DRAM or VRAM, with no side effects.
+    bool is_plain_memory(u32 address) const { return fast_read(address) != nullptr; }
 
     // Instruction fetch. Separate from read32 because it is the hottest path
     // in the machine and because a prefetch abort is a different exception
@@ -227,6 +266,40 @@ public:
     bool rom_overlay() const { return rom_overlay_; }
 
 private:
+    static u32 load32(const u8* p) {
+        return (static_cast<u32>(p[0]) << 24) | (static_cast<u32>(p[1]) << 16) |
+               (static_cast<u32>(p[2]) << 8) | static_cast<u32>(p[3]);
+    }
+    // Where a read of plain memory lands, or null for anything the full decode
+    // must see: low memory while the ROM still overlays it, and every address
+    // that is not DRAM or VRAM.
+    const u8* fast_read(u32 addr) const {
+        if (addr < kDramSize) return rom_overlay_ ? nullptr : dram_.data() + addr;
+        if (addr - kVramBase < kVramSize) return vram_.data() + addr - kVramBase;
+        return nullptr;
+    }
+    // The same for a store, which does here what the full decode would: a
+    // DRAM store ends the ROM overlay and is noted for the decode cache. A
+    // VRAM store with the hi-res shadow on goes the long way, to invalidate it.
+    u8* fast_write(u32 addr, u32 length) {
+        if (addr < kDramSize) {
+            rom_overlay_ = false;
+            write_watch_.note(addr, length);
+            return dram_.data() + addr;
+        }
+        if (addr - kVramBase < kVramSize && hires_ == nullptr) {
+            return vram_.data() + addr - kVramBase;
+        }
+        return nullptr;
+    }
+
+    u32  read32_slow(u32 address);
+    u16  read16_slow(u32 address);
+    u8   read8_slow(u32 address);
+    void write32_slow(u32 address, u32 value);
+    void write16_slow(u32 address, u16 value);
+    void write8_slow(u32 address, u8 value);
+
     // At reset the low two megabytes read ROM rather than DRAM, and the FIRST
     // WRITE anywhere in that range takes the overlay away for good - the ROM
     // shadows itself down there, then writes to it and carries on running from

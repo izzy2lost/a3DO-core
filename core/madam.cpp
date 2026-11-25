@@ -108,13 +108,21 @@ class BitReader {
 public:
     BitReader(Bus& bus, u32 base) : bus_(bus), base_(base) {}
 
+    // As many bits at a time as the current byte holds. A byte outside plain
+    // memory is read once per bit instead, as it always was, in case reading
+    // a chip register there does something.
     u32 read(unsigned bits) {
         u32 value = 0;
-        while (bits-- > 0) {
-            const u32 byte = bus_.read8(base_ + (bit_ >> 3));
-            const unsigned shift = 7u - (bit_ & 7u);
-            value = (value << 1) | ((byte >> shift) & 1u);
-            ++bit_;
+        while (bits > 0) {
+            const u32 address = base_ + (bit_ >> 3);
+            const unsigned left = 8u - (bit_ & 7u);
+            const unsigned take = bus_.is_plain_memory(address)
+                                      ? (bits < left ? bits : left)
+                                      : 1u;
+            const u32 byte = bus_.read8(address);
+            value = (value << take) | ((byte >> (left - take)) & ((1u << take) - 1u));
+            bit_ += take;
+            bits -= take;
         }
         return value;
     }
@@ -203,44 +211,62 @@ namespace {
 // clockwise/counter-clockwise face selection. A folded quad can yield four
 // crossings, so sorted crossings are consumed in pairs rather than assuming
 // every row has exactly one span.
-template <class Emit>
-void fill_quad(const s64 xs[4], const s64 ys[4], s64 max_x, s64 max_y,
+template <class T, class Emit>
+void fill_quad_as(const T xs[4], const T ys[4], T max_x, T max_y,
                u32 flags, Emit emit) {
     // Collapsed to a line: no area, nothing to fill.
     if (xs[0] == xs[1] && xs[1] == xs[2] && xs[2] == xs[3]) {
         return;
     }
 
-    s64 lowest = ys[0];
-    s64 highest = ys[0];
+    T lowest = ys[0];
+    T highest = ys[0];
+    T leftmost = xs[0];
+    T rightmost = xs[0];
     for (int i = 1; i < 4; ++i) {
         if (ys[i] < lowest) lowest = ys[i];
         if (ys[i] > highest) highest = ys[i];
+        if (xs[i] < leftmost) leftmost = xs[i];
+        if (xs[i] > rightmost) rightmost = xs[i];
     }
-    const s64 first_y = lowest < 0 ? 0 : lowest;
-    const s64 last_y = highest < max_y ? highest : max_y;
+    const T first_y = lowest < 0 ? 0 : lowest;
+    const T last_y = highest < max_y ? highest : max_y;
+    // Every crossing lies between the leftmost and rightmost corner, so a
+    // quad wholly left of the clip ends every span at or before zero and one
+    // wholly right of it starts every span at the edge: neither emits.
+    if (first_y >= last_y || rightmost < 0 || leftmost >= max_x) {
+        return;
+    }
 
     const bool allow_cw = (flags & kCcbAcw) != 0;
     const bool allow_ccw = (flags & kCcbAccw) != 0;
 
-    struct Crossing { s64 x; bool downward; };
-    for (s64 y = first_y; y < last_y; ++y) {
+    // The edges that are not horizontal, in order, with the rows they span.
+    struct Edge { T x, y, dx, dy, min_y, max_y; bool downward; };
+    Edge edges[4];
+    int edge_count = 0;
+    for (int edge = 0; edge < 4; ++edge) {
+        const int from = edge;
+        const int to = (edge + 1) & 3;
+        if (ys[from] == ys[to]) continue;
+        edges[edge_count++] = {
+            xs[from], ys[from], xs[to] - xs[from], ys[to] - ys[from],
+            ys[from] < ys[to] ? ys[from] : ys[to],
+            ys[from] < ys[to] ? ys[to] : ys[from],
+            ys[to] > ys[from],
+        };
+    }
+
+    struct Crossing { T x; bool downward; };
+    for (T y = first_y; y < last_y; ++y) {
         Crossing crossing[4] = {};
         int count = 0;
 
-        for (int edge = 0; edge < 4; ++edge) {
-            const int from = edge;
-            const int to = (edge + 1) & 3;
-            if (ys[from] == ys[to]) continue;
-            const s64 min_y = ys[from] < ys[to] ? ys[from] : ys[to];
-            const s64 max_edge_y = ys[from] < ys[to] ? ys[to] : ys[from];
-            if (y < min_y || y >= max_edge_y) continue;
-
-            const s64 numerator = (xs[to] - xs[from]) * (y - ys[from]);
-            crossing[count++] = {
-                xs[from] + numerator / (ys[to] - ys[from]),
-                ys[to] > ys[from],
-            };
+        for (int i = 0; i < edge_count; ++i) {
+            const Edge& e = edges[i];
+            if (y < e.min_y || y >= e.max_y) continue;
+            const T numerator = e.dx * (y - e.y);
+            crossing[count++] = {e.x + numerator / e.dy, e.downward};
         }
 
         for (int i = 1; i < count; ++i) {
@@ -258,8 +284,8 @@ void fill_quad(const s64 xs[4], const s64 ys[4], s64 max_x, s64 max_y,
             if (!((allow_cw && !downward) || (allow_ccw && downward))) {
                 continue;
             }
-            s64 from = crossing[i].x;
-            s64 to = crossing[i + 1].x;
+            T from = crossing[i].x;
+            T to = crossing[i + 1].x;
             if (from < 0) from = 0;
             // The right intersection is painted too.
             if (to < max_x) ++to;
@@ -270,6 +296,29 @@ void fill_quad(const s64 xs[4], const s64 ys[4], s64 max_x, s64 max_y,
             }
         }
     }
+}
+
+// The coordinates are whole pixels, so on any real cel they are small, and a
+// 32-bit CPU pays heavily for 64-bit compares, multiplies and above all
+// divides. When every corner and both limits are within 2^14 of zero, no
+// product below can exceed 2^30 and 32 bits give exactly the same answers;
+// only a wild cel falls back to 64.
+template <class Emit>
+void fill_quad(const s64 xs[4], const s64 ys[4], s64 max_x, s64 max_y,
+               u32 flags, Emit emit) {
+    constexpr s64 kSmall = s64{1} << 14;
+    bool small = max_x <= kSmall && max_y <= kSmall;
+    for (int i = 0; i < 4 && small; ++i) {
+        small = xs[i] >= -kSmall && xs[i] <= kSmall &&
+                ys[i] >= -kSmall && ys[i] <= kSmall;
+    }
+    if (!small) {
+        fill_quad_as<s64>(xs, ys, max_x, max_y, flags, emit);
+        return;
+    }
+    const s32 xs32[4] = {s32(xs[0]), s32(xs[1]), s32(xs[2]), s32(xs[3])};
+    const s32 ys32[4] = {s32(ys[0]), s32(ys[1]), s32(ys[2]), s32(ys[3])};
+    fill_quad_as<s32>(xs32, ys32, s32(max_x), s32(max_y), flags, emit);
 }
 
 }  // namespace
@@ -314,6 +363,8 @@ void Madam::reset() {
     cel_pmode_or_ = 0;
     cel_pmode_and_ = 0xffffu;
     cel_origin_vh_ = 0;
+    build_scale_table();
+    prepare_blend();
     cel_bpp_ = 0;
     cel_linear_ = false;
     cel_pluta_ = 0;
@@ -830,6 +881,7 @@ void Madam::write(u32 offset, u32 value) {
 
         case kMadamCcbCtl0:
             ccb_ctl0_ = value;
+            prepare_blend();
             break;
         case kMadamMatrixNumHi:
             matrix_num_hi_ = value;
@@ -1083,11 +1135,8 @@ u16 Madam::decode_pixel(u32 value, u16* multiplier, bool* transparent,
     if (raw_vh != nullptr) {
         *raw_vh = result & 0x8001u;
     }
-    const u32 blue_mode = (cel_flags_ & kCcbPacked) != 0
-                              ? ((ccb_ctl0_ >> 20) & 3u)
-                              : ((cel_pre1_ >> 12) & 3u);
     u16 blue_lsb = 0;
-    switch (blue_mode) {
+    switch (decode_blue_mode_) {
         case 1: blue_lsb = result & 1u; break;
         case 2: blue_lsb = (result >> 4) & 1u; break;
         case 3: blue_lsb = (result >> 5) & 1u; break;
@@ -1163,6 +1212,7 @@ void Madam::begin_cel(const Ccb& ccb) {
 
     cel_origin_vh_ = (static_cast<u32>(ccb.x) & 1u) |
                      ((static_cast<u32>(ccb.y) & 1u) << 15);
+    prepare_blend();
 
     // One source pixel to one screen pixel when the cel is neither scaled nor
     // rotated and lands on whole pixels. Anything else covers the rectangle
@@ -1234,7 +1284,7 @@ void Madam::begin_cel(const Ccb& ccb) {
 // sets the two sub-position bits. Writing the source straight out instead is
 // not a subtle difference: it is the whole of a cel's brightness and all of
 // its blending.
-void Madam::process_pixel(s32 x, s32 y, u16 source, u16 amv, u16 raw_vh) {
+RETRO3DO_ALWAYS_INLINE void Madam::process_pixel(s32 x, s32 y, u16 source, u16 amv, u16 raw_vh) {
     if (x < 0 || y < 0 || static_cast<u32>(x) >= clip_width_ ||
         static_cast<u32>(y) >= clip_height_) {
         return;
@@ -1242,53 +1292,102 @@ void Madam::process_pixel(s32 x, s32 y, u16 source, u16 amv, u16 raw_vh) {
 
     const u32 read_at = read_base_ + pixel_offset(x, y, read_stride_);
     const u32 write_at = write_base_ + pixel_offset(x, y, write_stride_);
-    const u16 frame = static_cast<u16>((static_cast<u16>(bus_.read8(read_at)) << 8) |
-                                       bus_.read8(read_at + 1));
+    // Halfword accesses when the addresses are even, which they are unless
+    // software programs an odd base; then byte by byte, as the bus sees it.
+    const bool aligned = ((read_at | write_at) & 1u) == 0;
+    const u16 frame = aligned ? bus_.read16(read_at)
+                              : static_cast<u16>((static_cast<u16>(bus_.read8(read_at)) << 8) |
+                                                 bus_.read8(read_at + 1));
 
-    const u16 final_pixel = blend(frame, source, amv, raw_vh);
+    // The last answer is kept, keyed on everything blend() reads that varies
+    // within a cel: the pixel, its multiplier, its position bits and - only
+    // when this half of PIXC reads it - the framebuffer pixel. A magnified
+    // texel covers many screen pixels with one source pixel, so most calls
+    // repeat the one before.
+    const u32 half = ((source | cel_pmode_or_) & cel_pmode_and_) >> 15 & 1u;
+    const u32 key_source = static_cast<u32>(source) | (static_cast<u32>(amv) << 16);
+    const u32 key_frame = static_cast<u32>(raw_vh) |
+                          (blend_reads_frame_[half] ? static_cast<u32>(frame) << 16 : 0u);
+    if (!blend_memo_valid_ || blend_memo_source_ != key_source ||
+        blend_memo_frame_ != key_frame) {
+        blend_memo_result_ = blend(frame, source, amv, raw_vh);
+        blend_memo_source_ = key_source;
+        blend_memo_frame_ = key_frame;
+        blend_memo_valid_ = true;
+    }
+    const u16 final_pixel = blend_memo_result_;
     const bool shadowed = hires_ != nullptr && hires_->active();
     const u16 previous = shadowed ? bus_.read16(write_at) : 0;
-    bus_.write8(write_at, static_cast<u8>(final_pixel >> 8));
-    bus_.write8(write_at + 1, static_cast<u8>(final_pixel));
+    if (aligned) {
+        bus_.write16(write_at, final_pixel);
+    } else {
+        bus_.write8(write_at, static_cast<u8>(final_pixel >> 8));
+        bus_.write8(write_at + 1, static_cast<u8>(final_pixel));
+    }
     ++stats_.pixels_written;
     if (shadowed) {
         hires_after_store(write_at, final_pixel, previous);
     }
 }
 
+void Madam::prepare_blend() {
+    for (u32 half = 0; half < 2; ++half) {
+        const u32 control = half ? (cel_pixc_ >> 16) : (cel_pixc_ & 0xffffu);
+        BlendHalf& h = blend_half_[half];
+        h.dv2 = static_cast<u8>(control & 1u);
+        h.av  = static_cast<u8>((control >> 1) & 0x1fu);
+        h.s2  = static_cast<u8>((control >> 6) & 3u);
+        h.dv1 = static_cast<u8>((control >> 8) & 3u);
+        h.mxf = static_cast<u8>((control >> 10) & 7u);
+        h.ms  = static_cast<u8>((control >> 13) & 3u);
+        h.s1  = static_cast<u8>((control >> 15) & 1u);
+        h.negate = h.extend = h.no_clip = h.dv3 = 0;
+        if ((cel_flags_ & kCcbUseAv) != 0) {
+            h.negate  = h.av & 1u;
+            h.extend  = (h.av >> 1) & 1u;
+            h.no_clip = (h.av >> 2) & 1u;
+            h.dv3     = (h.av >> 3) & 3u;
+        }
+        h.fixed_row = g_scale[h.mxf][h.dv1];
+        // The framebuffer is an input only as the first source or as the
+        // second operand; otherwise the result is the same over any pixel.
+        blend_reads_frame_[half] = h.s1 != 0 || h.s2 == 2;
+    }
+    blend_memo_valid_ = false;
+    // The masks are applied a byte at a time on the hardware, and every byte
+    // of each mask is the same, so one byte of it is enough here.
+    blend_mask1_ = static_cast<s32>(cel_pxor1_ & 0xffu);
+    blend_mask2_ = static_cast<s32>(cel_pxor2_ & 0xffu);
+    blend_fix_black_ = (cel_flags_ & kCcbNoBlk) == 0;
+    blend_plut_pos_ = (cel_flags_ & kCcbPlutPos) != 0;
+    blend_swap_hv_ = (ccb_ctl0_ & kCtl0SwapHv) != 0 && (cel_pre1_ & kPre1NoSwap) == 0;
+    blend_b15_ = ccb_ctl0_ & kCtl0B15Mask;
+    blend_b0_ = ccb_ctl0_ & kCtl0B0Mask;
+    decode_blue_mode_ = (cel_flags_ & kCcbPacked) != 0
+                            ? ((ccb_ctl0_ >> 20) & 3u)
+                            : ((cel_pre1_ >> 12) & 3u);
+}
+
 u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
     const u32 pixel = (source | cel_pmode_or_) & cel_pmode_and_;
 
     // Two independent control words, chosen by the pixel's top bit - which is
-    // how one cel gets two different blends without being two cels.
-    const u32 control = (pixel & 0x8000u) ? (cel_pixc_ >> 16) : (cel_pixc_ & 0xffffu);
-    const u32 dv2 = control & 1u;
-    const u32 av  = (control >> 1) & 0x1fu;
-    const u32 s2  = (control >> 6) & 3u;
-    const u32 dv1 = (control >> 8) & 3u;
-    const u32 mxf = (control >> 10) & 7u;
-    const u32 ms  = (control >> 13) & 3u;
-    const u32 s1  = (control >> 15) & 1u;
+    // how one cel gets two different blends without being two cels. Both are
+    // decoded in prepare_blend().
+    const BlendHalf& h = blend_half_[(pixel >> 15) & 1u];
+    const u32 dv3 = h.dv3;
 
-    u32 negate = 0, extend = 0, no_clip = 0, dv3 = 0;
-    if ((cel_flags_ & kCcbUseAv) != 0) {
-        negate  = av & 1u;
-        extend  = (av >> 1) & 1u;
-        no_clip = (av >> 2) & 1u;
-        dv3     = (av >> 3) & 3u;
-    }
-
-    const u32 input = (s1 != 0) ? frame : pixel;
+    const u32 input = (h.s1 != 0) ? frame : pixel;
     const auto red   = [](u32 p) { return (p >> 10) & 0x1fu; };
     const auto green = [](u32 p) { return (p >> 5) & 0x1fu; };
     const auto blue  = [](u32 p) { return p & 0x1fu; };
 
     s32 second_r = 0, second_g = 0, second_b = 0;
-    switch (s2) {
+    switch (h.s2) {
         case 0:
             break;
         case 1:
-            second_r = second_g = second_b = static_cast<s32>(av >> dv3);
+            second_r = second_g = second_b = static_cast<s32>(h.av >> dv3);
             break;
         case 2:
             second_r = static_cast<s32>(red(frame) >> dv3);
@@ -1302,12 +1401,13 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
             break;
     }
 
+    const u32 dv1 = h.dv1;
     s32 first_r = 0, first_g = 0, first_b = 0;
-    switch (ms) {
+    switch (h.ms) {
         case 0:
-            first_r = g_scale[mxf][dv1][red(input)];
-            first_g = g_scale[mxf][dv1][green(input)];
-            first_b = g_scale[mxf][dv1][blue(input)];
+            first_r = h.fixed_row[red(input)];
+            first_g = h.fixed_row[green(input)];
+            first_b = h.fixed_row[blue(input)];
             break;
         case 1:
             // The multiplier comes from the pixel itself, three bits a
@@ -1337,10 +1437,8 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
         }
     }
 
-    // The masks are applied a byte at a time on the hardware, and every byte
-    // of each mask is the same, so one byte of it is enough here.
-    const s32 mask1 = static_cast<s32>(cel_pxor1_ & 0xffu);
-    const s32 mask2 = static_cast<s32>(cel_pxor2_ & 0xffu);
+    const s32 mask1 = blend_mask1_;
+    const s32 mask2 = blend_mask2_;
     const s32 keep_r = first_r & mask1;
     const s32 keep_g = first_g & mask1;
     const s32 keep_b = first_b & mask1;
@@ -1348,6 +1446,7 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
     first_g &= mask2;
     first_b &= mask2;
 
+    const u32 negate = h.negate;
     s32 other_r, other_g, other_b;
     if (negate != 0) {
         other_r = second_r ^ 0xff;
@@ -1358,7 +1457,7 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
         other_g = second_g ^ first_g;
         other_b = second_b ^ first_b;
     }
-    if (extend != 0) {
+    if (h.extend != 0) {
         // Sign-extend from five bits, so a difference can come out negative.
         const auto sign5 = [](s32 v) {
             return static_cast<s32>(static_cast<s8>(v << 3)) >> 3;
@@ -1368,10 +1467,11 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
         other_b = sign5(other_b);
     }
 
+    const u32 dv2 = h.dv2;
     s32 out_r = (keep_r + other_r + static_cast<s32>(negate)) >> dv2;
     s32 out_g = (keep_g + other_g + static_cast<s32>(negate)) >> dv2;
     s32 out_b = (keep_b + other_b + static_cast<s32>(negate)) >> dv2;
-    if (no_clip == 0) {
+    if (h.no_clip == 0) {
         out_r = clamp_channel(out_r);
         out_g = clamp_channel(out_g);
         out_b = clamp_channel(out_b);
@@ -1383,7 +1483,7 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
 
     // A cel not allowed to write pure black writes the darkest non-black
     // instead, so it still covers what was underneath.
-    if ((cel_flags_ & kCcbNoBlk) == 0 && result == 0) {
+    if (blend_fix_black_ && result == 0) {
         result = 1u << 10;
     }
 
@@ -1391,16 +1491,16 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
     if (raw_vh == 0xffffu) {
         raw_vh = source & 0x8001u;
     }
-    u32 vh = ((cel_flags_ & kCcbPlutPos) != 0) ? raw_vh : cel_origin_vh_;
-    if ((ccb_ctl0_ & kCtl0SwapHv) != 0 && (cel_pre1_ & kPre1NoSwap) == 0) {
+    u32 vh = blend_plut_pos_ ? raw_vh : cel_origin_vh_;
+    if (blend_swap_hv_) {
         vh = (vh >> 15) | ((vh & 1u) << 15);
     }
-    switch (ccb_ctl0_ & kCtl0B15Mask) {
+    switch (blend_b15_) {
         case kCtl0B15Zero: vh &= ~0x8000u; break;
         case kCtl0B15One:  vh |= 0x8000u;  break;
         default: break;
     }
-    switch (ccb_ctl0_ & kCtl0B0Mask) {
+    switch (blend_b0_) {
         case kCtl0B0Zero: vh &= ~1u; break;
         case kCtl0B0One:  vh |= 1u;  break;
         case kCtl0B0Ppmp: vh = (vh & ~1u) | (result & 1u); break;
@@ -1410,7 +1510,7 @@ u16 Madam::blend(u16 frame, u16 source, u16 amv, u16 raw_vh) const {
     return static_cast<u16>((result & 0x7ffeu) | vh);
 }
 
-void Madam::put_pixel(s32 x, s32 y, u16 pixel, u16 shade, u16 raw_vh) {
+RETRO3DO_ALWAYS_INLINE void Madam::put_pixel(s32 x, s32 y, u16 pixel, u16 shade, u16 raw_vh) {
     // Once software has programmed the framebuffer registers, every pixel goes
     // through the processor. Before that - which is only ever a test - fall
     // back to a plain store so the pixel conversion can be checked alone.

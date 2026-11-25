@@ -229,6 +229,8 @@ void Madam::serialize(StateIO& s) {
     s(target_stride_bytes_);
     s(written_value_);
     s(written_flag_);
+    // Derived from the cel fields above, which a state can leave mid-cel.
+    prepare_blend();
 }
 
 void Dsp::serialize(StateIO& s) {

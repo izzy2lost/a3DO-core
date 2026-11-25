@@ -112,10 +112,21 @@ struct Arm60::DecodeCache {
     // across the whole of DRAM. Bumping a counter instead makes invalidating a
     // page O(1), which turns the cost of a memory test from proportional to
     // memory size into nothing at all.
+    //
+    // Each entry sits beside its stamp, so the check and the decoded
+    // instruction it guards share a cache line: two separate arrays made every
+    // instruction touch two lines, a visible cost on an in-order phone CPU.
+    struct Slot {
+        Decoded entry;
+        u32     stamp;
+    };
     struct Page {
-        Decoded entries[kPageEntries];
-        u32     stamp[kPageEntries];
-        u32     generation;
+        Slot slots[kPageEntries];
+        u32  generation;
+
+        void clear_stamps() {
+            for (Slot& slot : slots) slot.stamp = 0;
+        }
     };
 
     std::unordered_map<u32, std::vector<Page>::size_type> page_index;
@@ -142,7 +153,7 @@ struct Arm60::DecodeCache {
         }
         pages.emplace_back();
         Page& page = pages.back();
-        std::memset(page.stamp, 0, sizeof(page.stamp));
+        page.clear_stamps();
         page.generation = 1;
         const auto index = pages.size() - 1;
         page_index.emplace(key, index);
@@ -168,7 +179,7 @@ struct Arm60::DecodeCache {
             Page& page = pages[it->second];
             if (++page.generation == 0) {
                 // Wrapped, so old stamps could look current again.
-                std::memset(page.stamp, 0, sizeof(page.stamp));
+                page.clear_stamps();
                 page.generation = 1;
             }
         }
@@ -354,12 +365,13 @@ const Decoded& Arm60::decoded_at(u32 address) {
     DecodeCache::Page& page = cache_->page_for(address);
     const u32 slot = (address & (DecodeCache::kPageBytes - 1u)) >> 2;
 
-    if (page.stamp[slot] != page.generation) {
+    DecodeCache::Slot& entry = page.slots[slot];
+    if (entry.stamp != page.generation) {
         ++decodes_;
-        page.entries[slot] = decode(bus_.fetch32(address));
-        page.stamp[slot] = page.generation;
+        entry.entry = decode(bus_.fetch32(address));
+        entry.stamp = page.generation;
     }
-    return page.entries[slot];
+    return entry.entry;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +525,7 @@ std::FILE* const g_cyc_log = [] {
 }  // namespace
 #endif
 
-u32 Arm60::step() {
+RETRO3DO_ALWAYS_INLINE u32 Arm60::step_inline() {
     const u32 address = regs_[15];
 #if RETRO3DO_TRACING
     if (g_pc_trace != nullptr) {
@@ -585,10 +597,14 @@ u32 Arm60::step() {
     return cycles;
 }
 
+u32 Arm60::step() {
+    return step_inline();
+}
+
 u32 Arm60::run(u32 cycles) {
     u32 spent = 0;
     while (spent < cycles) {
-        spent += step();
+        spent += step_inline();
     }
     return spent;
 }

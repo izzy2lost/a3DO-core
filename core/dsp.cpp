@@ -332,7 +332,7 @@ u16 Dsp::noise() {
 
 // Reading data memory. The top of the range is not memory at all: it is the
 // DACs, the semaphores, and the windows onto the DMA channels.
-u16 Dsp::read(u32 address) {
+u16 Dsp::read_io(u32 address) {
     switch (address) {
         case 0xea: return noise();
         case 0xeb: return audio_out_status_;
@@ -384,7 +384,7 @@ u16 Dsp::read(u32 address) {
     return data_[shifted & 0x7f];
 }
 
-void Dsp::write(u32 address, u16 value) {
+void Dsp::write_io(u32 address, u16 value) {
     address &= 0x3ff;
     switch (address) {
         case 0x3eb:
@@ -429,16 +429,16 @@ void Dsp::write(u32 address, u16 value) {
     data_[shifted < 0x200 ? (shifted | 0x100) : (shifted + 0x100)] = value;
 }
 
-u16 Dsp::next_program_word() {
+RETRO3DO_ALWAYS_INLINE u16 Dsp::next_program_word() {
     return program_[pc_++ & 0x3ff];
 }
 
-u16 Dsp::mapped_register(u32 reg) const {
+RETRO3DO_ALWAYS_INLINE u16 Dsp::mapped_register(u32 reg) const {
     return static_cast<u16>(register_map_[register_map_index_][reg & 0x0f] ^
                             register_base_x4_);
 }
 
-u16 Dsp::operand_value(u16 address, bool indirect) {
+RETRO3DO_ALWAYS_INLINE u16 Dsp::operand_value(u16 address, bool indirect) {
     const u16 first = read(address);
     return indirect ? read(first) : first;
 }
@@ -446,7 +446,7 @@ u16 Dsp::operand_value(u16 address, bool indirect) {
 // A MOVE consumes one source even when the following word uses the packed
 // two- or three-register spelling.  In those spellings the source is the last
 // register field, as specified by the control-instruction operand diagram.
-u16 Dsp::move_source() {
+RETRO3DO_ALWAYS_INLINE u16 Dsp::move_source() {
     const u16 word = next_program_word();
     switch (op_type(word)) {
         case 0: case 1: case 2: case 3:
@@ -465,7 +465,7 @@ u16 Dsp::move_source() {
 // selection is kept alongside the group instead of mutating the execution
 // state while each field is decoded; this mirrors the hardware packet and
 // makes the write-back rule explicit at the caller.
-Dsp::OperandGroup Dsp::decode_operand_group(u16 word) {
+RETRO3DO_ALWAYS_INLINE Dsp::OperandGroup Dsp::decode_operand_group(u16 word) {
     OperandGroup group;
 
     auto append_register = [&](u32 reg, bool indirect) {
@@ -513,7 +513,7 @@ Dsp::OperandGroup Dsp::decode_operand_group(u16 word) {
     return group;
 }
 
-void Dsp::gather_arithmetic_operands(unsigned requested) {
+RETRO3DO_ALWAYS_INLINE void Dsp::gather_arithmetic_operands(unsigned requested) {
     writeback_ = 0;
     if (requested == 0) {
         if (requests_ == 0) return;

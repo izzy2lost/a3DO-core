@@ -143,7 +143,7 @@ bool Bus::load_bios(const u8* data, size_t size) {
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
-u32 Bus::read32(u32 address) {
+u32 Bus::read32_slow(u32 address) {
     // ARM word accesses ignore the low two address bits.
     const u32 addr = address & ~u32{3};
 
@@ -179,7 +179,7 @@ u32 Bus::read32(u32 address) {
     return 0;
 }
 
-u16 Bus::read16(u32 address) {
+u16 Bus::read16_slow(u32 address) {
     const u32 addr = address & ~u32{1};
     if (addr < kDramSize) {
         if (rom_overlay_) {
@@ -205,7 +205,7 @@ u16 Bus::read16(u32 address) {
     return 0;
 }
 
-u8 Bus::read8(u32 address) {
+u8 Bus::read8_slow(u32 address) {
     if (address < kDramSize) {
         if (rom_overlay_) {
             return address < kRomSize ? rom_[address] : u8{0};
@@ -251,7 +251,7 @@ u32 Bus::fetch32(u32 address) {
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
-void Bus::write32(u32 address, u32 value) {
+void Bus::write32_slow(u32 address, u32 value) {
     const u32 addr = address & ~u32{3};
 
     if (addr < kDramSize) {
@@ -286,7 +286,7 @@ void Bus::write32(u32 address, u32 value) {
     // ROM is read-only.
 }
 
-void Bus::write16(u32 address, u16 value) {
+void Bus::write16_slow(u32 address, u16 value) {
     const u32 addr = address & ~u32{1};
     if (addr < kDramSize) {
         rom_overlay_ = false;
@@ -310,7 +310,7 @@ void Bus::write16(u32 address, u16 value) {
     }
 }
 
-void Bus::write8(u32 address, u8 value) {
+void Bus::write8_slow(u32 address, u8 value) {
     if (address < kDramSize) {
         rom_overlay_ = false;
         dram_[address] = value;
